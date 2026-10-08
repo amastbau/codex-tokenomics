@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from codex_tokenomics import installer
 from codex_tokenomics.installer import InstallError, install, uninstall
 
 
@@ -216,6 +217,23 @@ def test_repeated_install_converges_and_updates_only_owned_unchanged_files(
     assert third.manifest_path.read_bytes() != first_manifest
 
 
+def test_repeated_install_repairs_owned_file_permissions(tmp_path: Path) -> None:
+    source = write_config(tmp_path)
+    result = install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=False)
+    owned_files = [
+        result.config_path,
+        result.unit_path,
+        result.skill_path,
+        result.manifest_path,
+    ]
+    for path in owned_files:
+        path.chmod(0o666)
+
+    install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=False)
+
+    assert [mode(path) for path in owned_files] == [0o600] * 4
+
+
 def test_install_refuses_to_replace_modified_owned_artifact(tmp_path: Path) -> None:
     source = write_config(tmp_path)
     result = install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=False)
@@ -336,3 +354,109 @@ def test_systemd_paths_escape_specifier_and_variable_expansion(tmp_path: Path) -
 
     unit = result.unit_path.read_text()
     assert "codex%%token$$" in unit
+
+
+def test_parent_swap_during_install_cannot_write_outside_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = write_config(tmp_path)
+    outside = tmp_path.parent / f"outside-write-race-{tmp_path.name}"
+    outside.mkdir()
+    sentinel = outside / "sentinel"
+    sentinel.write_text("safe")
+    original_open = installer.os.open
+    swapped = False
+
+    def swap_then_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode_value: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == "config.toml" and flags & os.O_CREAT and dir_fd is not None:
+            project = tmp_path / ".config/codex-tokenomics"
+            project.rename(tmp_path / ".config/codex-tokenomics-owned")
+            project.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return original_open(path, flags, mode_value, dir_fd=dir_fd)
+
+    monkeypatch.setattr(installer.os, "open", swap_then_open)
+
+    with pytest.raises(InstallError, match="symlink|directory"):
+        install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=False)
+
+    assert sentinel.read_text() == "safe"
+    assert not (outside / "config.toml").exists()
+
+
+def test_parent_swap_during_uninstall_cannot_remove_outside_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = write_config(tmp_path)
+    install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=False)
+    outside = tmp_path.parent / f"outside-remove-race-{tmp_path.name}"
+    outside.mkdir()
+    protected = outside / "config.toml"
+    protected.write_text("safe")
+    original_unlink = installer.os.unlink
+    swapped = False
+
+    def swap_then_unlink(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if not swapped and path == "config.toml" and dir_fd is not None:
+            project = tmp_path / ".config/codex-tokenomics"
+            project.rename(tmp_path / ".config/codex-tokenomics-owned")
+            project.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(installer.os, "unlink", swap_then_unlink)
+
+    with pytest.raises(InstallError, match="symlink|directory"):
+        uninstall(tmp_path)
+
+    assert protected.read_text() == "safe"
+
+
+def test_parent_swap_during_activation_rollback_cannot_delete_outside_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = write_config(tmp_path)
+    outside = tmp_path.parent / f"outside-rollback-race-{tmp_path.name}"
+    outside.mkdir()
+    protected = outside / "config.toml"
+    protected.write_text("safe")
+    monkeypatch.setattr(installer, "_current_home", lambda: tmp_path)
+    original_unlink = installer.os.unlink
+    swapped = False
+
+    def systemctl(*arguments: str) -> None:
+        if arguments[:2] == ("enable", "--now"):
+            raise InstallError("synthetic activation failure")
+
+    def swap_then_unlink(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if not swapped and path == "config.toml" and dir_fd is not None:
+            project = tmp_path / ".config/codex-tokenomics"
+            project.rename(tmp_path / ".config/codex-tokenomics-owned")
+            project.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        original_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(installer, "_systemctl_user", systemctl)
+    monkeypatch.setattr(installer.os, "unlink", swap_then_unlink)
+
+    with pytest.raises(InstallError, match="synthetic activation failure|symlink|directory"):
+        install(source, tmp_path, Path("/opt/bin/codex-tokenomics"), enable=True)
+
+    assert protected.read_text() == "safe"
