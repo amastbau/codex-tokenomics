@@ -13,8 +13,8 @@ CREATE TABLE sessions (
     last_seen_at TEXT NOT NULL
 );
 CREATE TABLE turns (
-    turn_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    turn_id TEXT NOT NULL,
     thread_id TEXT,
     root_turn_id TEXT,
     model TEXT,
@@ -31,7 +31,8 @@ CREATE TABLE turns (
     started_at TEXT,
     completed_at TEXT,
     duration_ms INTEGER,
-    time_to_first_token_ms INTEGER
+    time_to_first_token_ms INTEGER,
+    PRIMARY KEY (session_id, turn_id)
 );
 CREATE TABLE responses (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),

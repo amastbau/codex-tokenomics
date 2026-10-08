@@ -53,7 +53,7 @@ def test_open_applies_migration_once_and_enables_safe_pragmas(tmp_path: Path) ->
             assert store.connection.execute("PRAGMA synchronous").fetchone()[0] == 1
             assert store.connection.execute(
                 "SELECT version FROM schema_migrations"
-            ).fetchall()[0][0] == 1
+            ).fetchall()[0][0] == storage_module.SCHEMA_VERSION
             assert store.connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
             assert store.integrity_check() == "ok"
 
@@ -191,6 +191,27 @@ def test_all_turn_fields_are_persisted_and_lifecycle_merges(store: TelemetryStor
     assert row(store, "sessions")["context_window"] == 258400
 
 
+def test_turn_identity_is_scoped_by_session(store: TelemetryStore) -> None:
+    store.ingest([
+        TurnRecord(
+            session_id="session-1", timestamp=TIMESTAMP, turn_id="turn-1",
+            model="gpt-6.1-sol",
+        ),
+        TurnRecord(
+            session_id="session-2", timestamp=TIMESTAMP, turn_id="turn-1",
+            model="gpt-6.1-mini",
+        ),
+    ], CURSOR)
+
+    rows = store.connection.execute(
+        "SELECT session_id, turn_id, model FROM turns ORDER BY session_id"
+    ).fetchall()
+    assert [tuple(item) for item in rows] == [
+        ("session-1", "turn-1", "gpt-6.1-sol"),
+        ("session-2", "turn-1", "gpt-6.1-mini"),
+    ]
+
+
 def test_all_usage_fields_round_trip(store: TelemetryStore) -> None:
     store.ingest([USAGE], CURSOR)
     assert store.usage_samples(TIMESTAMP, TIMESTAMP) == (USAGE,)
@@ -279,6 +300,57 @@ def test_future_schema_is_rejected_without_altering_it(tmp_path: Path) -> None:
         TelemetryStore.open(path)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 99
+
+
+def test_version_one_database_migrates_turn_identity_to_session_scope(tmp_path: Path) -> None:
+    path = tmp_path / "telemetry.db"
+    with TelemetryStore.open(path):
+        pass
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE schema_migrations SET version=1")
+        connection.execute("ALTER TABLE turns RENAME TO turns_v2")
+        connection.execute("""
+            CREATE TABLE turns (
+                turn_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                thread_id TEXT,
+                root_turn_id TEXT,
+                model TEXT,
+                model_provider TEXT,
+                reasoning_effort TEXT,
+                collaboration_mode TEXT,
+                sandbox_mode TEXT,
+                approval_mode TEXT,
+                cwd TEXT,
+                workspace_roots TEXT NOT NULL DEFAULT '[]',
+                context_window INTEGER,
+                status TEXT,
+                observed_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER
+            )
+        """)
+        connection.execute("INSERT INTO turns SELECT * FROM turns_v2")
+        connection.execute("DROP TABLE turns_v2")
+        connection.commit()
+
+    with TelemetryStore.open(path) as store:
+        store.ingest([
+            TurnRecord(
+                session_id="session-1", timestamp=TIMESTAMP, turn_id="turn-1",
+                model="gpt-6.1-sol",
+            ),
+            TurnRecord(
+                session_id="session-2", timestamp=TIMESTAMP, turn_id="turn-1",
+                model="gpt-6.1-mini",
+            ),
+        ], CURSOR)
+        assert store.connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == (
+            storage_module.SCHEMA_VERSION
+        )
+        assert store.integrity_check() == "ok"
 
 
 def test_reopen_and_reingest_does_not_change_totals(tmp_path: Path) -> None:

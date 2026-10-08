@@ -25,7 +25,7 @@ from codex_tokenomics.telemetry import (
     UsageSample,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TABLE_NAMES = (
     "sessions", "turns", "responses", "usage_samples", "rate_limit_samples", "tool_events",
     "alert_incidents", "notification_attempts", "ingest_cursors", "service_health",
@@ -147,6 +147,13 @@ class TelemetryStore:
                     "INSERT INTO service_health (singleton, service_version) VALUES (1, ?)",
                     (version("codex-tokenomics"),),
                 )
+                schema_version = SCHEMA_VERSION
+            if schema_version < 2:
+                self._migrate_turn_identity_to_session_scope()
+                self.connection.execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (2, _now()),
+                )
             self.connection.execute(
                 "UPDATE service_health SET service_version=? WHERE singleton=1",
                 (version("codex-tokenomics"),),
@@ -155,6 +162,48 @@ class TelemetryStore:
         except BaseException:
             self.connection.rollback()
             raise
+
+    def _migrate_turn_identity_to_session_scope(self) -> None:
+        self.connection.execute("ALTER TABLE turns RENAME TO turns_v1")
+        self.connection.execute("""
+            CREATE TABLE turns (
+                session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                turn_id TEXT NOT NULL,
+                thread_id TEXT,
+                root_turn_id TEXT,
+                model TEXT,
+                model_provider TEXT,
+                reasoning_effort TEXT,
+                collaboration_mode TEXT,
+                sandbox_mode TEXT,
+                approval_mode TEXT,
+                cwd TEXT,
+                workspace_roots TEXT NOT NULL DEFAULT '[]',
+                context_window INTEGER,
+                status TEXT,
+                observed_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                time_to_first_token_ms INTEGER,
+                PRIMARY KEY (session_id, turn_id)
+            )
+        """)
+        self.connection.execute("""
+            INSERT INTO turns (
+                session_id, turn_id, thread_id, root_turn_id, model, model_provider,
+                reasoning_effort, collaboration_mode, sandbox_mode, approval_mode, cwd,
+                workspace_roots, context_window, status, observed_at, started_at, completed_at,
+                duration_ms, time_to_first_token_ms
+            )
+            SELECT
+                session_id, turn_id, thread_id, root_turn_id, model, model_provider,
+                reasoning_effort, collaboration_mode, sandbox_mode, approval_mode, cwd,
+                workspace_roots, context_window, status, observed_at, started_at, completed_at,
+                duration_ms, time_to_first_token_ms
+            FROM turns_v1
+        """)
+        self.connection.execute("DROP TABLE turns_v1")
 
     def ingest(self, records: Sequence[TelemetryRecord], cursor: IngestCursor) -> IngestResult:
         """Commit typed records and the last complete-line cursor together.
@@ -219,16 +268,15 @@ class TelemetryStore:
 
     def _merge_turn(self, record: TurnRecord) -> bool:
         exists = self.connection.execute(
-            "SELECT session_id FROM turns WHERE turn_id=?", (record.turn_id,),
+            "SELECT 1 FROM turns WHERE session_id=? AND turn_id=?",
+            (record.session_id, record.turn_id),
         ).fetchone()
-        if exists is not None and exists[0] != record.session_id:
-            raise ValueError("turn identity belongs to another session")
         result = self.connection.execute(
             "INSERT INTO turns (turn_id, session_id, thread_id, root_turn_id, model, "
             "model_provider, reasoning_effort, collaboration_mode, sandbox_mode, approval_mode, "
             "cwd, workspace_roots, context_window, status, observed_at, started_at, completed_at, "
             "duration_ms, time_to_first_token_ms) VALUES (" + ",".join("?" for _ in range(19)) + ") "
-            "ON CONFLICT(turn_id) DO UPDATE SET "
+            "ON CONFLICT(session_id, turn_id) DO UPDATE SET "
             "thread_id=COALESCE(excluded.thread_id, turns.thread_id), "
             "root_turn_id=COALESCE(excluded.root_turn_id, turns.root_turn_id), "
             "model=COALESCE(excluded.model, turns.model), "
