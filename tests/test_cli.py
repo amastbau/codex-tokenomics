@@ -1,4 +1,6 @@
 import json
+import sqlite3
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -112,6 +114,48 @@ def test_unsafe_query_returns_stable_error_without_statement_content(
     assert stdout == ""
     assert "query rejected" in stderr.lower()
     assert SECRET not in stderr
+
+
+def test_extreme_timestamp_filter_has_no_traceback(configured: tuple[Path, Path]) -> None:
+    config, _ = configured
+    code, stdout, stderr = invoke([
+        "usage", "--config", str(config), "--since", "0001-01-01T00:00:00+23:59",
+        "--format", "json",
+    ])
+    assert code == 2
+    assert stdout == ""
+    assert "invalid since filter" in stderr
+    assert "Traceback" not in stderr
+
+
+@pytest.mark.parametrize("arguments", [
+    ["query", "--sql", "SELECT COUNT(*) AS count FROM usage_samples", "--format", "json"],
+    ["health", "--format", "json"],
+])
+def test_cli_database_lock_respects_query_timeout(
+    configured: tuple[Path, Path], arguments: list[str],
+) -> None:
+    config, database = configured
+    config.write_text(config.read_text().replace("timeout_ms = 2000", "timeout_ms = 30"))
+    locker = sqlite3.connect(database)
+    try:
+        assert locker.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        locker.execute("CREATE TABLE lock_probe(value INTEGER)")
+        locker.commit()
+        assert locker.execute("PRAGMA locking_mode=EXCLUSIVE").fetchone()[0] == "exclusive"
+        locker.execute("BEGIN EXCLUSIVE")
+        locker.execute("INSERT INTO lock_probe VALUES (1)")
+        started = time.monotonic()
+        code, stdout, stderr = invoke([
+            arguments[0], "--config", str(config), *arguments[1:],
+        ])
+        assert time.monotonic() - started < 0.5
+        assert code == 2
+        assert stdout == ""
+        assert "query execution timed out" in stderr
+    finally:
+        locker.rollback()
+        locker.close()
 
 
 def test_validate_config_prints_explicit_detector_values(configured: tuple[Path, Path]) -> None:

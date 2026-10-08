@@ -23,7 +23,13 @@ from codex_tokenomics.notifiers import (
     SubprocessRunner,
     SystemClock,
 )
-from codex_tokenomics.query import QueryError, QueryService, _open_read_only
+from codex_tokenomics.query import (
+    QueryError,
+    QueryService,
+    QueryTimedOut,
+    _open_read_only,
+    _remaining_timeout_ms,
+)
 from codex_tokenomics.service import MonitorService, ServiceError
 from codex_tokenomics.storage import TelemetryStore
 
@@ -108,8 +114,15 @@ def _report(name: str, args: argparse.Namespace) -> int:
 def command_health(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     # Reuse the service's health semantics without opening the database for writes.
-    connection = _open_read_only(config.paths.database)
     deadline = time.monotonic_ns() + config.query.timeout_ms * 1_000_000
+    try:
+        connection = _open_read_only(
+            config.paths.database, timeout_ms=_remaining_timeout_ms(deadline),
+        )
+    except sqlite3.Error:
+        if time.monotonic_ns() >= deadline:
+            raise QueryTimedOut("query execution timed out") from None
+        raise
     connection.set_progress_handler(lambda: int(time.monotonic_ns() >= deadline), 1000)
     store = TelemetryStore(config.paths.database, connection)
     runner = args.runner if args.runner is not None else SubprocessRunner()
@@ -125,7 +138,10 @@ def command_health(args: argparse.Namespace) -> int:
             ),
             clock,
         )
-        _emit(args.stdout, asdict(service.health()), args.format)
+        health = service.health()
+        if time.monotonic_ns() >= deadline:
+            raise QueryTimedOut("query execution timed out")
+        _emit(args.stdout, asdict(health), args.format)
     finally:
         store.close()
     return 0

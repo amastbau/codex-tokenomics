@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -145,6 +146,18 @@ def test_sql_accepts_one_parameterized_read_and_returns_json_safe_rows(
     assert json.dumps(rows, allow_nan=False)
 
 
+def test_duplicate_and_generated_column_names_preserve_every_value(query: QueryService) -> None:
+    assert query.run_sql("SELECT 1 AS x, 2 AS x, 3 AS x_2") == [{
+        "x": 1, "x_2": 2, "x_2_2": 3,
+    }]
+
+
+@pytest.mark.parametrize("name", ["since", "until"])
+def test_extreme_aware_timestamp_is_safely_rejected(query: QueryService, name: str) -> None:
+    with pytest.raises(QueryRejected, match=f"invalid {name} filter"):
+        query.run_report("usage", {name: "0001-01-01T00:00:00+23:59"})
+
+
 def test_query_connection_is_uri_read_only_even_without_authorizer(
     database: Path,
 ) -> None:
@@ -167,6 +180,27 @@ def test_recursive_query_hits_execution_limit(query: QueryService) -> None:
         query.run_sql(
             "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x) SELECT * FROM x"
         )
+
+
+def test_locked_wal_database_cannot_bypass_query_timeout(tmp_path: Path) -> None:
+    path = tmp_path / "locked.db"
+    locker = sqlite3.connect(path)
+    try:
+        assert locker.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        locker.execute("CREATE TABLE telemetry(value INTEGER)")
+        locker.commit()
+        assert locker.execute("PRAGMA locking_mode=EXCLUSIVE").fetchone()[0] == "exclusive"
+        locker.execute("BEGIN EXCLUSIVE")
+        locker.execute("INSERT INTO telemetry VALUES (1)")
+        started = time.monotonic()
+        with pytest.raises(QueryTimedOut):
+            QueryService(path, row_limit=10, timeout_ms=30).run_sql(
+                "SELECT value FROM telemetry"
+            )
+        assert time.monotonic() - started < 0.5
+    finally:
+        locker.rollback()
+        locker.close()
 
 
 def test_database_stays_unchanged_after_queries(query: QueryService, database: Path) -> None:

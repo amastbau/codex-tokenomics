@@ -59,17 +59,29 @@ def _deny_mutation_and_attach(
     return sqlite3.SQLITE_OK
 
 
-def _open_read_only(path: Path) -> sqlite3.Connection:
+def _open_read_only(path: Path, *, timeout_ms: int | None = None) -> sqlite3.Connection:
     resolved = Path(path).expanduser().resolve(strict=True)
-    connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    timeout_seconds = 5.0 if timeout_ms is None else max(0, timeout_ms) / 1000
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro", uri=True, timeout=timeout_seconds,
+    )
     connection.row_factory = sqlite3.Row
     try:
+        if timeout_ms is not None:
+            connection.execute(f"PRAGMA busy_timeout={max(0, timeout_ms)}")
         connection.execute("PRAGMA query_only=ON")
         connection.set_authorizer(_deny_mutation_and_attach)
     except BaseException:
         connection.close()
         raise
     return connection
+
+
+def _remaining_timeout_ms(deadline: int) -> int:
+    remaining_ns = deadline - time.monotonic_ns()
+    if remaining_ns <= 0:
+        raise QueryTimedOut("query execution timed out")
+    return max(1, math.ceil(remaining_ns / 1_000_000))
 
 
 def _json_value(value: object) -> object:
@@ -84,11 +96,20 @@ def _json_value(value: object) -> object:
 
 def _column_names(description: Sequence[Sequence[object]]) -> tuple[str, ...]:
     names: list[str] = []
-    used: dict[str, int] = {}
+    used: set[str] = set()
+    suffixes: dict[str, int] = {}
     for column in description:
         base = str(column[0])
-        used[base] = used.get(base, 0) + 1
-        names.append(base if used[base] == 1 else f"{base}_{used[base]}")
+        candidate = base
+        if candidate in used:
+            suffix = suffixes.get(base, 2)
+            candidate = f"{base}_{suffix}"
+            while candidate in used:
+                suffix += 1
+                candidate = f"{base}_{suffix}"
+            suffixes[base] = suffix + 1
+        used.add(candidate)
+        names.append(candidate)
     return tuple(names)
 
 
@@ -97,11 +118,11 @@ def _utc_filter(value: object, name: str) -> str:
         raise QueryRejected(f"invalid {name} filter")
     try:
         parsed = datetime.fromisoformat(value)
-    except ValueError:
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError
+        return parsed.astimezone(UTC).isoformat()
+    except (OverflowError, ValueError):
         raise QueryRejected(f"invalid {name} filter") from None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise QueryRejected(f"invalid {name} filter")
-    return parsed.astimezone(UTC).isoformat()
 
 
 _REPORT_SQL = {
@@ -214,10 +235,11 @@ class QueryService:
         filters = {} if filters is None else filters
         if not isinstance(filters, Mapping):
             raise QueryRejected("report filters must be a mapping")
+        deadline = time.monotonic_ns() + self.timeout_ms * 1_000_000
         if name == "health":
             if filters:
                 raise QueryRejected("unsupported filter for health report")
-            return self._health_report()
+            return self._health_report(deadline)
         if name not in _REPORT_SQL:
             raise QueryRejected("unknown report")
         where, parameters, limit = self._filters(name, filters)
@@ -229,7 +251,9 @@ class QueryService:
         else:
             sql = _REPORT_SQL[name].format(where=f"WHERE {where}" if where else "")
             parameters.append(limit)
-        return self._execute(sql, parameters, limit=self.row_limit, raw=False)
+        return self._execute(
+            sql, parameters, limit=self.row_limit, raw=False, deadline=deadline,
+        )
 
     def run_sql(
         self, statement: str, parameters: Sequence[object] = (),
@@ -238,7 +262,10 @@ class QueryService:
             raise QueryRejected("query rejected")
         if isinstance(parameters, (str, bytes, bytearray)):
             raise QueryRejected("query parameters must be a sequence")
-        return self._execute(statement, parameters, limit=self.row_limit, raw=True)
+        return self._execute(
+            statement, parameters, limit=self.row_limit, raw=True,
+            deadline=time.monotonic_ns() + self.timeout_ms * 1_000_000,
+        )
 
     def _filters(
         self, name: str, filters: Mapping[str, object],
@@ -274,16 +301,19 @@ class QueryService:
             parameters.append(session)
         return " AND ".join(conditions), parameters, limit
 
-    def _health_report(self) -> list[dict[str, object]]:
+    def _health_report(self, deadline: int) -> list[dict[str, object]]:
         sql = (
             "SELECT last_poll_at, last_success_at, files_seen, parse_failures, "
             "notification_failures, service_version FROM service_health WHERE singleton=1"
         )
-        rows = self._execute(sql, (), limit=1, raw=False)
+        rows = self._execute(sql, (), limit=1, raw=False, deadline=deadline)
         try:
             integrity = self._execute(
                 "PRAGMA integrity_check", (), limit=self.row_limit, raw=False,
+                deadline=deadline,
             )
+        except QueryTimedOut:
+            raise
         except QueryError:
             integrity_status = "unavailable"
         else:
@@ -299,8 +329,8 @@ class QueryService:
 
     def _execute(
         self, statement: str, parameters: Sequence[object], *, limit: int, raw: bool,
+        deadline: int,
     ) -> list[dict[str, object]]:
-        deadline = time.monotonic_ns() + self.timeout_ms * 1_000_000
         timed_out = False
         recursive = False
 
@@ -319,8 +349,12 @@ class QueryService:
             return _deny_mutation_and_attach(action, first, second, database, trigger)
 
         try:
-            connection = _open_read_only(self.database_path)
+            connection = _open_read_only(
+                self.database_path, timeout_ms=_remaining_timeout_ms(deadline),
+            )
         except (OSError, sqlite3.Error):
+            if time.monotonic_ns() >= deadline:
+                raise QueryTimedOut("query execution timed out") from None
             raise QueryRejected("database unavailable") from None
         try:
             connection.set_authorizer(authorize)
@@ -337,7 +371,7 @@ class QueryService:
                 if len(fetched) > limit:
                     raise QueryRowLimitExceeded("query row limit exceeded")
             except sqlite3.Error:
-                if timed_out:
+                if timed_out or time.monotonic_ns() >= deadline:
                     raise QueryTimedOut("query execution timed out") from None
                 raise QueryRejected("query rejected") from None
             if time.monotonic_ns() >= deadline:
