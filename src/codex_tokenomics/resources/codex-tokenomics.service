@@ -1,0 +1,13 @@
+[Unit]
+Description=Codex Tokenomics local telemetry monitor
+After=graphical-session.target network-online.target
+
+[Service]
+Type=simple
+UMask=0077
+ExecStart={executable} daemon --config {config_path}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
