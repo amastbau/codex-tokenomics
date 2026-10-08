@@ -29,4 +29,3 @@ def test_skill_frontmatter_is_minimal_and_discriminating() -> None:
     skill_text = SKILL.read_text()
     assert skill_text.startswith("---\nname: codex-tokenomics\ndescription:")
     assert "local content-free Codex session telemetry" in skill_text.split("---", 2)[1]
-
