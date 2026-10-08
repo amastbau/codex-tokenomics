@@ -319,6 +319,43 @@ def test_recovery_progress_survives_store_restart(tmp_path: Path) -> None:
         ) == ()
 
 
+@pytest.mark.parametrize("scope_type", ["session", "aggregate"])
+def test_advanced_live_boundary_restarts_persisted_recovery_after_pre_restart_burst(
+    tmp_path: Path, scope_type: str,
+) -> None:
+    config = RECOVERY_CONFIG if scope_type == "session" else replace(
+        RECOVERY_CONFIG, session_absolute_tokens_per_minute=1_000_000,
+        aggregate_absolute_tokens_per_minute=250_000,
+    )
+    path = tmp_path / "telemetry.db"
+    restart_boundary = NOW + timedelta(seconds=360)
+    with TelemetryStore.open(path) as store:
+        engine, incident_id = opened_engine(store, config)
+        assert engine.evaluate(NOW + timedelta(seconds=60), LIVE_BOUNDARY) == ()
+        ingest(store, [sample(260_000, 350)])
+    with TelemetryStore.open(path) as reopened:
+        engine = DetectionEngine(reopened, config)
+        assert engine.evaluate(restart_boundary, live_after=restart_boundary) == ()
+        row = reopened.connection.execute(
+            "SELECT incident_id, below_since, recovered_at FROM alert_incidents",
+        ).fetchone()
+        assert row["incident_id"] == incident_id
+        assert row["below_since"] == restart_boundary.isoformat()
+        assert row["recovered_at"] is None
+        assert engine.evaluate(NOW + timedelta(seconds=659), restart_boundary) == ()
+        recovery = engine.evaluate(NOW + timedelta(seconds=660), restart_boundary)
+        assert len(recovery) == 1
+        assert recovery[0].state == "recovered"
+        assert recovery[0].scope_type == scope_type
+        assert recovery[0].incident_id == incident_id
+        assert recovery[0].opened_at == NOW
+        assert recovery[0].recovered_at == NOW + timedelta(seconds=660)
+        assert reopened.table_counts()["alert_incidents"] == 1
+        assert DetectionEngine(reopened, config).evaluate(
+            NOW + timedelta(seconds=661), restart_boundary,
+        ) == ()
+
+
 def test_recovery_rearms_one_new_incident_for_a_later_spike(store: TelemetryStore) -> None:
     engine, first_id = opened_engine(store, replace(RECOVERY_CONFIG, recovery_seconds=7))
     engine.evaluate(NOW + timedelta(seconds=60), LIVE_BOUNDARY)

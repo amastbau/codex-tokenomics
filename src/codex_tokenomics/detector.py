@@ -158,6 +158,11 @@ class DetectionEngine:
             if below_since is not None:
                 self._set_below_since(incident["incident_id"], None)
             return None
+        # A new live boundary excludes earlier usage, so that interval cannot
+        # prove continuous quiet progress carried over from a previous run.
+        if below_since is not None and below_since < live_after:
+            below_since = live_after
+            self._set_below_since(incident["incident_id"], below_since)
         if below_since is None or self._intervening_spike(
             samples, below_since, now, live_after, first, absolute_threshold,
         ):
