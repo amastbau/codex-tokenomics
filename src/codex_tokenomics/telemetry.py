@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+SQLITE_MAX_INTEGER = 2**63 - 1
+
 
 @dataclass(frozen=True, slots=True)
 class EventContext:
@@ -121,7 +123,7 @@ def _string(value: object) -> str | None:
 
 
 def _integer(value: object) -> int | None:
-    return value if type(value) is int and value >= 0 else None
+    return value if type(value) is int and 0 <= value <= SQLITE_MAX_INTEGER else None
 
 
 def _enum(value: object, allowed: set[str]) -> str | None:

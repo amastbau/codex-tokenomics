@@ -39,10 +39,22 @@ class FakeClock:
 
 @dataclass
 class FakeDispatcher:
+    store: TelemetryStore | None = None
+    clock: FakeClock | None = None
     transitions: list[IncidentTransition] = field(default_factory=list)
 
     def dispatch(self, transition: IncidentTransition) -> None:
         self.transitions.append(transition)
+        if self.store is None or self.clock is None or transition.state != "opened":
+            return
+        self.store.record_notification_attempt(
+            incident_id=transition.incident_id, channel="desktop",
+            attempted_at=self.clock.now(), attempt_number=1, outcome_code="sent",
+        )
+        self.store.record_notification_attempt(
+            incident_id=transition.incident_id, channel="email",
+            attempted_at=self.clock.now(), attempt_number=1, outcome_code="sent",
+        )
 
     @property
     def email_count(self) -> int:
@@ -87,8 +99,8 @@ def harness(tmp_path: Path) -> Iterator[ServiceHarness]:
     store = TelemetryStore.open(config.paths.database)
     collector = Collector(config.paths.session_root, store)
     detector = DetectionEngine(store, config.detector)
-    dispatcher = FakeDispatcher()
     clock = FakeClock()
+    dispatcher = FakeDispatcher(store, clock)
     service = service_module.MonitorService(config, store, collector, detector, dispatcher, clock)
     fixture = ServiceHarness(store, collector, detector, dispatcher, clock, service,
                              config.paths.session_root / "2026" / "10" / "08" / "rollout.jsonl")
@@ -186,6 +198,39 @@ def test_restart_resumes_cursor_without_duplicate_alert(harness: ServiceHarness)
     assert harness.store.get_cursor(str(harness.path)).offset == saved_offset
     assert harness.store.table_counts()["alert_incidents"] == 1
     assert harness.dispatcher.email_count == 1
+
+
+def test_restart_dispatches_persisted_open_incident_without_attempt(
+    harness: ServiceHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness.service.reconcile()
+    assert harness.store.open_incident(
+        incident_id="pending-incident", scope_type="session", scope_id="session-1",
+        trigger="absolute", observed_rate=260_000, baseline_rate=None,
+        absolute_threshold=250_000, opened_at=harness.clock.now(),
+    )
+
+    def recording_dispatch(transition: IncidentTransition) -> None:
+        harness.dispatcher.transitions.append(transition)
+        harness.store.record_notification_attempt(
+            incident_id=transition.incident_id, channel="desktop",
+            attempted_at=harness.clock.now(), attempt_number=1, outcome_code="sent",
+        )
+        harness.store.record_notification_attempt(
+            incident_id=transition.incident_id, channel="email",
+            attempted_at=harness.clock.now(), attempt_number=1, outcome_code="sent",
+        )
+
+    monkeypatch.setattr(harness.dispatcher, "dispatch", recording_dispatch)
+    cycle = harness.service.run_once()
+
+    assert [(item.state, item.incident_id) for item in cycle.transitions] == [
+        ("opened", "pending-incident"),
+    ]
+    assert [(item.state, item.incident_id) for item in harness.dispatcher.transitions] == [
+        ("opened", "pending-incident"),
+    ]
+    assert harness.service.run_once().transitions == ()
 
 
 def test_live_recovery_dispatches_once(harness: ServiceHarness) -> None:

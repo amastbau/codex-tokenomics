@@ -54,7 +54,7 @@ def _deny_mutation_and_attach(
             return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_FUNCTION:
         function_name = (second or first or "").casefold()
-        if function_name in {"load_extension", "readfile", "writefile"}:
+        if function_name in {"load_extension", "readfile", "writefile", "randomblob", "zeroblob"}:
             return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 

@@ -182,6 +182,15 @@ def test_recursive_query_hits_execution_limit(query: QueryService) -> None:
         )
 
 
+@pytest.mark.parametrize("statement", [
+    "SELECT length(randomblob(30000000))",
+    "SELECT length(zeroblob(30000000))",
+])
+def test_expensive_blob_functions_are_rejected(query: QueryService, statement: str) -> None:
+    with pytest.raises(QueryRejected):
+        query.run_sql(statement)
+
+
 def test_locked_wal_database_cannot_bypass_query_timeout(tmp_path: Path) -> None:
     path = tmp_path / "locked.db"
     locker = sqlite3.connect(path)

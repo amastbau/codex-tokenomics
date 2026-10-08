@@ -44,7 +44,7 @@ class SystemClock:
 
 
 class SubprocessRunner:
-    def __init__(self, *, timeout_seconds: float | None = None) -> None:
+    def __init__(self, *, timeout_seconds: float | None = 30.0) -> None:
         self.timeout_seconds = timeout_seconds
 
     def run(self, argv: Sequence[str]) -> CommandResult:
@@ -254,16 +254,12 @@ class NotificationDispatcher:
         number = last["attempt_number"] + 1 if last is not None else 1
         previous_at = datetime.fromisoformat(last["attempted_at"]) if last is not None else None
         delays = self.config.email_retry_delays_seconds
-        while number <= len(delays) + 1:
-            if previous_at is not None:
-                retry_at = previous_at + timedelta(seconds=delays[number - 2])
-                remaining = (retry_at - self.clock.now()).total_seconds()
-                if remaining > 0:
-                    self.clock.sleep(remaining)
-            attempted_at = self.clock.now()
-            outcome = self.email.send(alert)
-            self._record(alert.transition.incident_id, "email", number, attempted_at, outcome)
-            if outcome not in {"failed", "unavailable", "timeout"}:
+        if number > len(delays) + 1:
+            return
+        if previous_at is not None:
+            retry_at = previous_at + timedelta(seconds=delays[number - 2])
+            if self.clock.now() < retry_at:
                 return
-            previous_at = attempted_at
-            number += 1
+        attempted_at = self.clock.now()
+        outcome = self.email.send(alert)
+        self._record(alert.transition.incident_id, "email", number, attempted_at, outcome)

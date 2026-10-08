@@ -299,6 +299,34 @@ def test_usage_before_metadata_enriches_placeholder_and_sets_later_context(
     assert cursor_row(store)["session_id"] == "session-1"
 
 
+def test_oversized_token_counter_does_not_block_other_records(
+    tmp_path: Path, store: TelemetryStore,
+) -> None:
+    root = tmp_path / "sessions"
+    write_rollout(root / "rollout.jsonl", metadata("session-1"), usage("before", 100), {
+        "type": "token_usage_record",
+        "timestamp": TIMESTAMP,
+        "payload": {
+            "session_id": "session-1",
+            "response_id": "too-large",
+            "usage": {
+                "input_tokens": 2**63,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2**63,
+            },
+        },
+    }, usage("after", 50))
+
+    result = Collector(root, store).scan_once()
+
+    assert (result.records_inserted, result.parse_failures) == (3, 0)
+    assert store.total_tokens() == 150
+    assert cursor_row(store)["byte_offset"] == (root / "rollout.jsonl").stat().st_size
+
+
 def test_mixed_fixture_persists_all_telemetry_without_content(
     tmp_path: Path, store: TelemetryStore,
 ) -> None:

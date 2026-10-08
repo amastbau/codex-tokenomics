@@ -63,6 +63,9 @@ class FakeClock:
         self.sleeps.append(seconds)
         self.current += timedelta(seconds=seconds)
 
+    def advance(self, seconds: float) -> None:
+        self.current += timedelta(seconds=seconds)
+
 
 @pytest.fixture
 def store(tmp_path: Path) -> Iterator[TelemetryStore]:
@@ -231,7 +234,11 @@ def test_email_failure_retries_follow_configured_delays_and_exhaust_budget(
     dispatch = dispatcher(runner, store, clock)
     dispatch.dispatch(OPEN)
     dispatch.dispatch(OPEN)
-    assert clock.sleeps == [10, 30]
+    clock.advance(10)
+    dispatch.dispatch(OPEN)
+    clock.advance(30)
+    dispatch.dispatch(OPEN)
+    assert clock.sleeps == []
     assert len(runner.calls_named("gws")) == 3
     assert attempts(store) == [
         ("desktop", 1, "sent"), ("email", 1, "failed"),
@@ -250,9 +257,12 @@ def test_retries_stop_immediately_after_first_success(store: TelemetryStore) -> 
     open_incident(store)
     runner = FakeRunner([CommandResult(0, "", ""), CommandResult(1, SECRET, SECRET)])
     clock = FakeClock()
-    dispatcher(runner, store, clock).dispatch(OPEN)
+    dispatch = dispatcher(runner, store, clock)
+    dispatch.dispatch(OPEN)
+    clock.advance(10)
+    dispatch.dispatch(OPEN)
     assert len(runner.calls_named("gws")) == 2
-    assert clock.sleeps == [10]
+    assert clock.sleeps == []
     assert attempts(store)[-1] == ("email", 2, "sent")
 
 
@@ -260,12 +270,16 @@ def test_altered_retry_config_controls_attempt_count_and_delays(store: Telemetry
     open_incident(store)
     runner = FakeRunner([CommandResult(1, SECRET, SECRET)] * 5)
     clock = FakeClock()
-    dispatcher(runner, store, clock, NotificationConfig("someone@example.org", (2, 7, 11))).dispatch(
-        OPEN,
+    dispatch = dispatcher(
+        runner, store, clock, NotificationConfig("someone@example.org", (2, 7, 11)),
     )
+    dispatch.dispatch(OPEN)
+    for seconds in (2, 7, 11):
+        clock.advance(seconds)
+        dispatch.dispatch(OPEN)
     assert len(runner.calls_named("notify-send")) == 1
     assert len(runner.calls_named("gws")) == 4
-    assert clock.sleeps == [2, 7, 11]
+    assert clock.sleeps == []
     assert all(argv[4] == "someone@example.org" for argv in runner.calls_named("gws"))
 
 
@@ -298,9 +312,15 @@ def test_failed_email_restart_resumes_remaining_delay_and_attempt_budget(
     with TelemetryStore.open(path) as second:
         runner = FakeRunner([CommandResult(1, SECRET, SECRET)] * 2)
         clock = FakeClock(NOW + timedelta(seconds=4))
-        dispatcher(runner, second, clock).dispatch(OPEN)
+        dispatch = dispatcher(runner, second, clock)
+        dispatch.dispatch(OPEN)
+        assert runner.calls_named("gws") == []
+        clock.advance(6)
+        dispatch.dispatch(OPEN)
+        clock.advance(30)
+        dispatch.dispatch(OPEN)
         assert len(runner.calls_named("gws")) == 2
-        assert clock.sleeps == [6, 30]
+        assert clock.sleeps == []
         assert attempts(second)[-1] == ("email", 3, "failed")
         dispatcher(FakeRunner(), second).dispatch(OPEN)
         assert len(attempts(second)) == 4
@@ -443,9 +463,12 @@ def test_unavailable_and_timeout_email_attempts_are_persisted_and_retried(
     open_incident(store)
     runner = FakeRunner([CommandResult(0, "", ""), failure])
     clock = FakeClock()
-    dispatcher(runner, store, clock).dispatch(OPEN)
+    dispatch = dispatcher(runner, store, clock)
+    dispatch.dispatch(OPEN)
+    clock.advance(10)
+    dispatch.dispatch(OPEN)
     assert attempts(store) == [("desktop", 1, "sent"), ("email", 1, outcome), ("email", 2, "sent")]
-    assert clock.sleeps == [10]
+    assert clock.sleeps == []
     assert store.health_snapshot()["notification_failures"] == 1
 
 

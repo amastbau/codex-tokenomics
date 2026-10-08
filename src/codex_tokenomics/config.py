@@ -109,12 +109,13 @@ def validate_config(data: Mapping[str, object]) -> AppConfig:
         key: _positive_number(value, f"detector.{key}", integer=key != "relative_multiplier")
         for key, value in detector.items()
     })
-    if detector_config.baseline_window_seconds < (
-        detector_config.rate_window_seconds * detector_config.minimum_baseline_buckets
-    ):
+    required_baseline_seconds = detector_config.rate_window_seconds * (
+        detector_config.minimum_baseline_buckets + 1
+    )
+    if detector_config.baseline_window_seconds < required_baseline_seconds:
         raise ConfigError(
             "detector.baseline_window_seconds must be >= "
-            "rate_window_seconds * minimum_baseline_buckets"
+            "rate_window_seconds * (minimum_baseline_buckets + 1)"
         )
 
     delays = notifications["email_retry_delays_seconds"]

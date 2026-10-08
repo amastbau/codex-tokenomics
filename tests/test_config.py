@@ -97,12 +97,12 @@ def test_fractional_poll_interval_and_relative_multiplier_are_supported() -> Non
     assert config.detector.relative_multiplier == 1.5
 
 
-@pytest.mark.parametrize("baseline_window,valid", [(299, False), (300, True)])
+@pytest.mark.parametrize("baseline_window,valid", [(300, False), (360, True)])
 def test_baseline_must_hold_minimum_buckets(baseline_window: int, valid: bool) -> None:
     data = copy.deepcopy(VALID_CONFIG)
     data["detector"]["baseline_window_seconds"] = baseline_window
     if valid:
-        assert validate_config(data).detector.baseline_window_seconds == 300
+        assert validate_config(data).detector.baseline_window_seconds == 360
     else:
         with pytest.raises(ConfigError, match="baseline_window_seconds"):
             validate_config(data)

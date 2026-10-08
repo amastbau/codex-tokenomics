@@ -5,14 +5,14 @@ import signal
 import sqlite3
 import stat
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from pathlib import Path
 from typing import Literal
 
 from codex_tokenomics.collector import CollectionResult, Collector
 from codex_tokenomics.config import AppConfig
-from codex_tokenomics.detector import DetectionEngine, IncidentTransition
+from codex_tokenomics.detector import DetectionEngine, IncidentTransition, TokenBreakdown
 from codex_tokenomics.notifiers import Clock, NotificationDispatcher
 from codex_tokenomics.storage import TelemetryStore
 
@@ -147,9 +147,11 @@ class MonitorService:
                 ).fetchone()[0]
             else:
                 stage = "detection_failed"
-                transitions = self.detector.evaluate(
+                pending = self._pending_open_transitions()
+                detected = self.detector.evaluate(
                     self._now(), boundary.started_at, live_after_rowid=self._live_usage_rowid,
                 )
+                transitions = (*pending, *detected)
                 stage = "dispatch_failed"
                 for transition in transitions:
                     self.dispatcher.dispatch(transition)
@@ -167,6 +169,60 @@ class MonitorService:
             raise ServiceError(stage) from None
         self._last_cycle_failed = False
         return ServiceCycle(collection, transitions)
+
+    def _pending_open_transitions(self) -> tuple[IncidentTransition, ...]:
+        rows = self.store.connection.execute(
+            "SELECT incident_id, scope_type, scope_id, trigger, observed_rate, baseline_rate, "
+            "absolute_threshold, opened_at FROM alert_incidents "
+            "WHERE recovered_at IS NULL ORDER BY opened_at, incident_id"
+        )
+        transitions: list[IncidentTransition] = []
+        retry_budget = len(self.config.notifications.email_retry_delays_seconds) + 1
+        for row in rows:
+            attempts = tuple(self.store.connection.execute(
+                "SELECT channel, attempt_number, outcome_code, attempted_at "
+                "FROM notification_attempts WHERE incident_id=? "
+                "ORDER BY attempt_number", (row["incident_id"],),
+            ))
+            desktop_opened = any(
+                item["channel"] == "desktop" and item["attempt_number"] == 1
+                for item in attempts
+            )
+            email_done = any(
+                item["channel"] == "email" and item["outcome_code"] in {
+                    "sent", "dry_run", "skipped",
+                }
+                for item in attempts
+            )
+            email_attempts = [
+                item for item in attempts
+                if item["channel"] == "email"
+                and item["outcome_code"] in {"failed", "unavailable", "timeout"}
+            ]
+            email_pending = (
+                not email_done
+                and self._email_attempt_due(email_attempts, retry_budget)
+            )
+            if desktop_opened and not email_pending:
+                continue
+            transitions.append(IncidentTransition(
+                incident_id=row["incident_id"], scope_type=row["scope_type"],
+                scope_id=row["scope_id"], state="opened", trigger=row["trigger"],
+                observed_rate=row["observed_rate"], baseline_rate=row["baseline_rate"],
+                absolute_threshold=row["absolute_threshold"],
+                opened_at=datetime.fromisoformat(row["opened_at"]), recovered_at=None,
+                token_breakdown=TokenBreakdown(0, 0, 0, 0, 0, 0),
+            ))
+        return tuple(transitions)
+
+    def _email_attempt_due(self, attempts: list[sqlite3.Row], retry_budget: int) -> bool:
+        if not attempts:
+            return True
+        last = max(attempts, key=lambda item: item["attempt_number"])
+        if last["attempt_number"] >= retry_budget:
+            return False
+        delay = self.config.notifications.email_retry_delays_seconds[last["attempt_number"] - 1]
+        return self._now() >= datetime.fromisoformat(last["attempted_at"]) + timedelta(seconds=delay)
 
     def _backlog_bytes(self) -> int:
         root = self.config.paths.session_root
