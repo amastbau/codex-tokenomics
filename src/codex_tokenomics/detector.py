@@ -16,6 +16,16 @@ type _TimedSample = tuple[datetime, UsageSample]
 
 
 @dataclass(frozen=True, slots=True)
+class TokenBreakdown:
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+    total_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
 class IncidentTransition:
     incident_id: str
     scope_type: Literal["session", "aggregate"]
@@ -27,6 +37,7 @@ class IncidentTransition:
     absolute_threshold: float
     opened_at: datetime
     recovered_at: datetime | None
+    token_breakdown: TokenBreakdown
 
 
 def _utc(value: datetime) -> datetime:
@@ -107,6 +118,7 @@ class DetectionEngine:
                     state="opened", trigger=trigger, observed_rate=observed_rate,
                     baseline_rate=baseline_rate, absolute_threshold=absolute_threshold,
                     opened_at=now, recovered_at=None,
+                    token_breakdown=self._token_breakdown(scoped_samples, now, live_after),
                 ))
         return tuple(transitions)
 
@@ -177,6 +189,7 @@ class DetectionEngine:
             scope_id=incident["scope_id"], state="recovered", trigger=incident["trigger"],
             observed_rate=observed_rate, baseline_rate=baseline_rate,
             absolute_threshold=absolute_threshold, opened_at=opened_at, recovered_at=now,
+            token_breakdown=self._token_breakdown(samples, now, live_after),
         )
 
     def _intervening_spike(
@@ -222,6 +235,23 @@ class DetectionEngine:
             if start <= timestamp <= now and timestamp > live_after
         )
         return tokens * 60.0 / self.config.rate_window_seconds
+
+    def _token_breakdown(
+        self, samples: tuple[_TimedSample, ...], now: datetime, live_after: datetime,
+    ) -> TokenBreakdown:
+        start = now - timedelta(seconds=self.config.rate_window_seconds)
+        current = tuple(
+            item for timestamp, item in samples
+            if start <= timestamp <= now and timestamp > live_after
+        )
+        return TokenBreakdown(
+            input_tokens=sum(item.input_tokens for item in current),
+            cached_input_tokens=sum(item.cached_input_tokens for item in current),
+            cache_write_input_tokens=sum(item.cache_write_input_tokens for item in current),
+            output_tokens=sum(item.output_tokens for item in current),
+            reasoning_output_tokens=sum(item.reasoning_output_tokens for item in current),
+            total_tokens=sum(item.total_tokens for item in current),
+        )
 
     def _baseline_rate(
         self, samples: tuple[_TimedSample, ...], now: datetime, first: datetime | None,

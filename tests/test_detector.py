@@ -76,6 +76,62 @@ def test_absolute_threshold_opens_incident(store: TelemetryStore) -> None:
         transition.state = "recovered"
 
 
+def test_transition_breakdown_sums_unique_current_window_by_scope(store: TelemetryStore) -> None:
+    first = replace(sample(100, -120), input_tokens=1, cached_input_tokens=2,
+                    cache_write_input_tokens=3, output_tokens=4, reasoning_output_tokens=5)
+    second = replace(sample(200, 0), input_tokens=10, cached_input_tokens=20,
+                     cache_write_input_tokens=30, output_tokens=40, reasoning_output_tokens=50)
+    other = replace(sample(400, -30, session_id="session-2"), input_tokens=7,
+                    cached_input_tokens=8, cache_write_input_tokens=9, output_tokens=10,
+                    reasoning_output_tokens=11)
+    ingest(store, [sample(900_000, -121), first, first, second, other, sample(900_000, 1)])
+    config = replace(RECOVERY_CONFIG, rate_window_seconds=120,
+                     session_absolute_tokens_per_minute=100,
+                     aggregate_absolute_tokens_per_minute=300)
+    transitions = DetectionEngine(store, config).evaluate(NOW, NOW - timedelta(seconds=121))
+    assert [(item.scope_id, item.observed_rate) for item in transitions] == [
+        ("session-1", 150), ("session-2", 200), ("all", 350),
+    ]
+    expected = [(11, 22, 33, 44, 55, 300), (7, 8, 9, 10, 11, 400), (18, 30, 42, 54, 66, 700)]
+    for transition, values in zip(transitions, expected, strict=True):
+        tokens = transition.token_breakdown
+        assert (tokens.input_tokens, tokens.cached_input_tokens, tokens.cache_write_input_tokens,
+                tokens.output_tokens, tokens.reasoning_output_tokens, tokens.total_tokens) == values
+        with pytest.raises(FrozenInstanceError):
+            tokens.total_tokens = 999
+
+
+def test_transition_breakdown_excludes_usage_at_or_before_live_boundary(store: TelemetryStore) -> None:
+    current = replace(sample(260_000, 0), input_tokens=13, cached_input_tokens=7,
+                      cache_write_input_tokens=3, output_tokens=11, reasoning_output_tokens=5)
+    ingest(store, [sample(900_000, -45), sample(900_000, -30), current])
+    transitions = DetectionEngine(store, RECOVERY_CONFIG).evaluate(NOW, NOW - timedelta(seconds=30))
+    assert len(transitions) == 1
+    tokens = transitions[0].token_breakdown
+    assert (tokens.input_tokens, tokens.cached_input_tokens, tokens.cache_write_input_tokens,
+            tokens.output_tokens, tokens.reasoning_output_tokens, tokens.total_tokens) == (
+        13, 7, 3, 11, 5, 260_000,
+    )
+
+
+def test_recovery_transition_breakdown_uses_current_window_instead_of_opening(
+    store: TelemetryStore,
+) -> None:
+    ingest(store, [sample(260_000, 0)])
+    engine = DetectionEngine(store, RECOVERY_CONFIG)
+    opening = engine.evaluate(NOW, LIVE_BOUNDARY)[0]
+    assert engine.evaluate(NOW + timedelta(seconds=61), LIVE_BOUNDARY) == ()
+    ingest(store, [replace(sample(17, 350), input_tokens=1, cached_input_tokens=2,
+                          cache_write_input_tokens=3, output_tokens=4, reasoning_output_tokens=5)])
+    recovered = engine.evaluate(NOW + timedelta(seconds=361), LIVE_BOUNDARY)[0]
+    assert recovered.incident_id == opening.incident_id
+    assert recovered.state == "recovered"
+    tokens = recovered.token_breakdown
+    assert (tokens.input_tokens, tokens.cached_input_tokens, tokens.cache_write_input_tokens,
+            tokens.output_tokens, tokens.reasoning_output_tokens, tokens.total_tokens) == (1, 2, 3, 4, 5, 17)
+    assert recovered.observed_rate == 17
+
+
 def test_relative_spike_opens_below_absolute_threshold(store: TelemetryStore) -> None:
     baseline(store, [40_000, 40_000, 40_000])
     ingest(store, [sample(130_000, -5)])
