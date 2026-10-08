@@ -210,6 +210,66 @@ def test_help_lists_every_task_eight_command() -> None:
         assert command in stdout
 
 
+def test_help_lists_install_lifecycle_commands() -> None:
+    code, stdout, stderr = invoke(["--help"])
+    assert code == 0, stderr
+    assert "install" in stdout
+    assert "uninstall" in stdout
+
+
+def test_install_command_delegates_without_enabling_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("synthetic")
+    calls: list[tuple[Path, Path, Path, bool]] = []
+
+    @dataclass(frozen=True)
+    class Result:
+        config_path: Path = tmp_path / "installed.toml"
+        enabled: bool = False
+
+    monkeypatch.setattr(
+        cli,
+        "install_user",
+        lambda source, home, executable, enable: (
+            calls.append((source, home, executable, enable)) or Result()
+        ),
+    )
+
+    code, stdout, stderr = invoke(["install", "--config", str(config), "--format", "json"])
+
+    assert code == 0, stderr
+    assert json.loads(stdout)["enabled"] is False
+    assert calls[0][0] == config
+    assert calls[0][1] == Path.home()
+    assert calls[0][3] is False
+
+
+def test_uninstall_command_always_preserves_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Path, bool]] = []
+
+    @dataclass(frozen=True)
+    class Result:
+        database_removed: bool = False
+
+    monkeypatch.setattr(
+        cli,
+        "uninstall_user",
+        lambda home, preserve_database: (
+            calls.append((home, preserve_database)) or Result()
+        ),
+    )
+
+    code, stdout, stderr = invoke(["uninstall", "--format", "json"])
+
+    assert code == 0, stderr
+    assert json.loads(stdout)["database_removed"] is False
+    assert calls == [(Path.home(), True)]
+
+
 def test_default_console_output_is_not_swallowed(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["--help"]) == 0
     assert "notification-test" in capsys.readouterr().out

@@ -15,6 +15,9 @@ from pathlib import Path
 from codex_tokenomics.collector import Collector
 from codex_tokenomics.config import AppConfig, ConfigError, load_config
 from codex_tokenomics.detector import DetectionEngine, IncidentTransition, TokenBreakdown
+from codex_tokenomics.installer import InstallError
+from codex_tokenomics.installer import install as install_user
+from codex_tokenomics.installer import uninstall as uninstall_user
 from codex_tokenomics.notifiers import (
     CommandRunner,
     DesktopNotifier,
@@ -213,6 +216,24 @@ def command_notification_test(args: argparse.Namespace) -> int:
     return 0 if all(value in {"sent", "dry_run"} for value in outcomes.values()) else 1
 
 
+def command_install(args: argparse.Namespace) -> int:
+    result = install_user(
+        args.config,
+        Path.home(),
+        Path(sys.argv[0]).resolve(),
+        args.enable,
+    )
+    _emit(args.stdout, asdict(result), args.format)
+    return 0
+
+
+def command_uninstall(args: argparse.Namespace) -> int:
+    # Database deletion remains a separate destructive operation, not a CLI shortcut.
+    result = uninstall_user(Path.home(), preserve_database=True)
+    _emit(args.stdout, asdict(result), args.format)
+    return 0
+
+
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "validate-config": command_validate_config,
     "daemon": command_daemon,
@@ -227,6 +248,8 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "incidents": command_incidents,
     "query": command_query,
     "notification-test": command_notification_test,
+    "install": command_install,
+    "uninstall": command_uninstall,
 }
 
 
@@ -283,6 +306,18 @@ def _parser() -> argparse.ArgumentParser:
     _format_option(notification)
     notification.add_argument("--desktop", action="store_true")
     notification.add_argument("--email-dry-run", action="store_true")
+
+    install_parser = subparsers.add_parser(
+        "install", help="install the per-user service and Codex query skill",
+    )
+    install_parser.add_argument("--config", type=Path, required=True)
+    install_parser.add_argument("--enable", action="store_true")
+    _format_option(install_parser)
+
+    uninstall_parser = subparsers.add_parser(
+        "uninstall", help="remove service files and preserve the telemetry database",
+    )
+    _format_option(uninstall_parser)
     return parser
 
 
@@ -319,6 +354,8 @@ def main(
         err(f"{error}\n")
     except ServiceError as error:
         err(f"service failed: {error}\n")
+    except InstallError as error:
+        err(f"installation failed: {error}\n")
     except (FileNotFoundError, OSError, sqlite3.Error):
         err("operation unavailable\n")
     return 2
