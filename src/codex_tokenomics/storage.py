@@ -241,9 +241,9 @@ class TelemetryStore:
             "workspace_roots=CASE WHEN excluded.workspace_roots='[]' THEN turns.workspace_roots "
             "ELSE excluded.workspace_roots END, "
             "context_window=COALESCE(excluded.context_window, turns.context_window), "
-            "status=CASE WHEN excluded.observed_at>=turns.observed_at "
-            "THEN COALESCE(excluded.status, turns.status) "
-            "ELSE COALESCE(turns.status, excluded.status) END, "
+            # A turn's lifecycle is monotonic; context observation times cannot suppress completion.
+            "status=CASE WHEN turns.status='completed' THEN turns.status "
+            "ELSE COALESCE(excluded.status, turns.status) END, "
             "observed_at=MAX(excluded.observed_at, turns.observed_at), "
             "started_at=COALESCE(excluded.started_at, turns.started_at), "
             "completed_at=COALESCE(excluded.completed_at, turns.completed_at), "

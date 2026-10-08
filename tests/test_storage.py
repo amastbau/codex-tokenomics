@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 from dataclasses import FrozenInstanceError, replace
+from itertools import permutations
 from pathlib import Path
 
 import pytest
@@ -443,6 +444,42 @@ def test_older_turn_lifecycle_cannot_revert_completion(store: TelemetryStore) ->
     assert persisted["status"] == "completed"
     assert persisted["started_at"] == TIMESTAMP
     assert persisted["duration_ms"] == 3000
+
+
+@pytest.mark.parametrize("order", list(permutations(("started", "context", "completed"))))
+@pytest.mark.parametrize("completion_has_timing", [True, False])
+def test_turn_lifecycle_permutations_preserve_completion_and_context(
+    store: TelemetryStore, order: tuple[str, ...], completion_has_timing: bool,
+) -> None:
+    records = {
+        "started": TurnRecord(
+            session_id="session-1", timestamp=TIMESTAMP, turn_id="turn-1",
+            status="started", started_at=1791446400,
+        ),
+        "context": TurnRecord(
+            session_id="session-1", timestamp="2026-10-08T08:00:02Z", turn_id="turn-1",
+            model="gpt-6.1-sol", reasoning_effort="high", context_window=258400,
+            workspace_roots=("/synthetic/project",),
+        ),
+        "completed": TurnRecord(
+            session_id="session-1", timestamp="2026-10-08T08:00:01Z", turn_id="turn-1",
+            status="completed", completed_at=1791446401 if completion_has_timing else None,
+            duration_ms=1000 if completion_has_timing else None,
+        ),
+    }
+    store.ingest([records[name] for name in order], CURSOR)
+    persisted = row(store, "turns")
+    assert persisted["status"] == "completed"
+    assert persisted["observed_at"] == "2026-10-08T08:00:02+00:00"
+    assert persisted["started_at"] == TIMESTAMP
+    assert persisted["model"] == "gpt-6.1-sol"
+    assert persisted["reasoning_effort"] == "high"
+    assert persisted["context_window"] == 258400
+    assert persisted["workspace_roots"] == '["/synthetic/project"]'
+    assert persisted["completed_at"] == (
+        "2026-10-08T08:00:01+00:00" if completion_has_timing else None
+    )
+    assert persisted["duration_ms"] == (1000 if completion_has_timing else None)
 
 
 def test_reopening_updates_running_service_version(tmp_path: Path, monkeypatch) -> None:
