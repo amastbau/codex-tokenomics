@@ -524,7 +524,7 @@ def test_failed_live_stage_preserves_heartbeat_without_raw_exception(
     harness.clock.advance(10)
     harness.append(harness.usage("live-spike", 260_000))
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         raise RuntimeError(SECRET)
 
     if stage == "detection":
@@ -579,8 +579,8 @@ def test_heartbeat_transaction_failure_preserves_previous_completed_cycle(
     harness.clock.advance(10)
     evaluate = harness.detector.evaluate
 
-    def reject_success_heartbeat(now: datetime, live_after: datetime):
-        transitions = evaluate(now, live_after)
+    def reject_success_heartbeat(now: datetime, live_after: datetime, **kwargs):
+        transitions = evaluate(now, live_after, **kwargs)
         harness.store.connection.execute(
             "CREATE TEMP TRIGGER reject_heartbeat BEFORE UPDATE ON service_health "
             "WHEN NEW.last_success_at='2026-10-08T08:00:10+00:00' "
@@ -597,3 +597,81 @@ def test_heartbeat_transaction_failure_preserves_previous_completed_cycle(
     assert health.last_success_at == NOW.isoformat()
     assert health.status == "degraded"
     assert not harness.store.connection.in_transaction
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_future_dated_reconciled_usage_never_becomes_live_when_clock_catches_up(
+    harness: ServiceHarness, restart: bool,
+) -> None:
+    harness.append(harness.usage("future-history", 260_000, timestamp=NOW + timedelta(seconds=30)))
+    harness.service.reconcile()
+    assert harness.store.total_tokens() == 260_000
+    assert harness.dispatcher.transitions == []
+    if restart:
+        config = harness.service.config
+        harness.store.close()
+        harness.store = TelemetryStore.open(config.paths.database)
+        harness.collector = Collector(config.paths.session_root, harness.store)
+        harness.detector = DetectionEngine(harness.store, config.detector)
+        harness.clock.advance(5)
+        harness.service = service_module.MonitorService(config, harness.store, harness.collector,
+                                                       harness.detector, harness.dispatcher,
+                                                       harness.clock)
+        harness.service.reconcile()
+    harness.clock.advance(30)
+
+    cycle = harness.service.run_once()
+
+    assert cycle.collection.records_inserted == 0
+    assert cycle.transitions == ()
+    assert harness.store.table_counts()["alert_incidents"] == 0
+    assert harness.dispatcher.email_count == 0
+    harness.clock.advance(1)
+    harness.append(harness.usage("small-live-append", 10))
+    cycle = harness.service.run_once()
+    assert cycle.collection.records_inserted == 1
+    assert cycle.transitions == ()
+    harness.append(harness.usage("future-history", 500_000))
+    replay = harness.service.run_once()
+    assert replay.collection.records_inserted == 0
+    assert replay.collection.duplicates == 1
+    assert replay.transitions == ()
+
+
+@pytest.mark.parametrize("event_offset", [-10, 0])
+def test_usage_ingested_after_reconciliation_is_live_at_or_before_event_time_boundary(
+    harness: ServiceHarness, event_offset: int,
+) -> None:
+    harness.service.reconcile()
+    harness.clock.advance(1)
+    harness.append(harness.usage("late-live-spike", 260_000,
+                                timestamp=NOW + timedelta(seconds=event_offset)))
+
+    cycle = harness.service.run_once()
+
+    assert cycle.collection.records_inserted == 1
+    assert cycle.opened_incidents == 1
+    assert cycle.transitions[0].observed_rate == 260_000
+    assert cycle.transitions[0].token_breakdown.total_tokens == 260_000
+    assert cycle.transitions[0].opened_at == NOW + timedelta(seconds=1)
+    assert harness.dispatcher.email_count == 1
+    assert harness.service.run_once().transitions == ()
+
+
+def test_new_ingestion_still_uses_event_time_window_for_old_and_future_usage(
+    harness: ServiceHarness,
+) -> None:
+    harness.service.reconcile()
+    harness.clock.advance(1)
+    harness.append(harness.usage("old-live", 260_000, timestamp=NOW - timedelta(seconds=60)),
+                   harness.usage("future-live", 260_000, timestamp=NOW + timedelta(seconds=30)))
+
+    initial = harness.service.run_once()
+    assert initial.collection.records_inserted == 2
+    assert initial.transitions == ()
+    harness.clock.advance(29)
+    later = harness.service.run_once()
+    assert later.collection.records_inserted == 0
+    assert later.opened_incidents == 1
+    assert later.transitions[0].observed_rate == 260_000
+    assert later.transitions[0].token_breakdown.total_tokens == 260_000

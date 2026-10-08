@@ -66,6 +66,7 @@ class MonitorService:
         self.dispatcher = dispatcher
         self.clock = clock
         self.live_boundary: LiveBoundary | None = None
+        self._live_usage_rowid = 0
         self._last_cycle_failed = False
         self._stop_requested = False
 
@@ -139,9 +140,16 @@ class MonitorService:
         try:
             collection = self.collector.scan_once()
             transitions = ()
-            if boundary is not None:
+            if boundary is None:
+                # A process-lifetime ingestion cohort, independent of event timestamps.
+                self._live_usage_rowid = self.store.connection.execute(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM usage_samples",
+                ).fetchone()[0]
+            else:
                 stage = "detection_failed"
-                transitions = self.detector.evaluate(self._now(), boundary.started_at)
+                transitions = self.detector.evaluate(
+                    self._now(), boundary.started_at, live_after_rowid=self._live_usage_rowid,
+                )
                 stage = "dispatch_failed"
                 for transition in transitions:
                     self.dispatcher.dispatch(transition)

@@ -51,12 +51,19 @@ class DetectionEngine:
         self.store = store
         self.config = config
 
-    def evaluate(self, now: datetime, live_after: datetime) -> tuple[IncidentTransition, ...]:
-        """Emit only new persisted transitions; startup history informs baseline alone."""
+    def evaluate(
+        self, now: datetime, live_after: datetime, *, live_after_rowid: int | None = None,
+    ) -> tuple[IncidentTransition, ...]:
+        """Use an ingestion watermark when supplied; otherwise retain timestamp eligibility.
+
+        The service snapshots the watermark after reconciliation. Event timestamps
+        still define windows, and live_after still bounds recovery continuity.
+        """
         now, live_after = _utc(now), _utc(live_after)
         active = self._active_incidents()
         completed = self._latest_recoveries()
         window_start = now - timedelta(seconds=self.config.rate_window_seconds)
+        live_start = window_start
         history_start = min(
             window_start, now - timedelta(seconds=self.config.baseline_window_seconds),
         )
@@ -65,6 +72,9 @@ class DetectionEngine:
         for incident in active.values():
             if incident["below_since"] is not None:
                 since = datetime.fromisoformat(incident["below_since"])
+                live_start = min(
+                    live_start, since - timedelta(seconds=self.config.rate_window_seconds),
+                )
                 history_start = min(
                     history_start,
                     since - timedelta(seconds=self.config.baseline_window_seconds),
@@ -74,10 +84,26 @@ class DetectionEngine:
             (_utc(datetime.fromisoformat(item.timestamp)), item)
             for item in self.store.usage_samples(history_start, now)
         )
+        if live_after_rowid is None:
+            live_samples = tuple(item for item in samples if item[0] > live_after)
+        else:
+            # Only identities needed by current rates and intervening recovery windows
+            # are materialized; the historical cohort itself is one integer watermark.
+            live_ids = {
+                (row["session_id"], row["response_id"])
+                for row in self.store.connection.execute(
+                    "SELECT session_id, response_id FROM usage_samples "
+                    "WHERE rowid>? AND observed_at>=? AND observed_at<=?",
+                    (live_after_rowid, live_start.isoformat(), now.isoformat()),
+                )
+            }
+            live_samples = tuple(
+                item for item in samples
+                if (item[1].session_id, item[1].response_id) in live_ids
+            )
         first_observations = self._first_observations(now)
         session_ids = {
-            item.session_id for timestamp, item in samples
-            if timestamp >= window_start and timestamp > live_after
+            item.session_id for timestamp, item in live_samples if timestamp >= window_start
         }
         session_ids.update(scope_id for scope_type, scope_id in active if scope_type == "session")
         scopes = [("session", session_id) for session_id in sorted(session_ids)]
@@ -90,16 +116,19 @@ class DetectionEngine:
             scoped_samples = samples if scope_type == "aggregate" else tuple(
                 item for item in samples if item[1].session_id == scope_id
             )
+            scoped_live = live_samples if scope_type == "aggregate" else tuple(
+                item for item in live_samples if item[1].session_id == scope_id
+            )
             first = min(first_observations.values(), default=None) if (
                 scope_type == "aggregate"
             ) else first_observations.get(scope_id)
-            observed_rate = self._observed_rate(scoped_samples, now, live_after)
+            observed_rate = self._observed_rate(scoped_live, now)
             baseline_rate = self._baseline_rate(scoped_samples, now, first)
             absolute_threshold = self._absolute_threshold(scope_type)
             trigger = self._trigger(observed_rate, baseline_rate, absolute_threshold)
             if key in active:
                 recovered = self._recover_transition(
-                    active[key], scoped_samples, now, live_after, first,
+                    active[key], scoped_samples, scoped_live, now, live_after, first,
                     observed_rate, baseline_rate, absolute_threshold, trigger,
                 )
                 if recovered is not None:
@@ -118,7 +147,7 @@ class DetectionEngine:
                     state="opened", trigger=trigger, observed_rate=observed_rate,
                     baseline_rate=baseline_rate, absolute_threshold=absolute_threshold,
                     opened_at=now, recovered_at=None,
-                    token_breakdown=self._token_breakdown(scoped_samples, now, live_after),
+                    token_breakdown=self._token_breakdown(scoped_live, now),
                 ))
         return tuple(transitions)
 
@@ -156,8 +185,9 @@ class DetectionEngine:
             )
 
     def _recover_transition(
-        self, incident: sqlite3.Row, samples: tuple[_TimedSample, ...], now: datetime,
-        live_after: datetime, first: datetime | None, observed_rate: float,
+        self, incident: sqlite3.Row, samples: tuple[_TimedSample, ...],
+        live_samples: tuple[_TimedSample, ...], now: datetime, live_after: datetime,
+        first: datetime | None, observed_rate: float,
         baseline_rate: float | None, absolute_threshold: float, trigger: str | None,
     ) -> IncidentTransition | None:
         opened_at = datetime.fromisoformat(incident["opened_at"])
@@ -170,13 +200,13 @@ class DetectionEngine:
             if below_since is not None:
                 self._set_below_since(incident["incident_id"], None)
             return None
-        # A new live boundary excludes earlier usage, so that interval cannot
-        # prove continuous quiet progress carried over from a previous run.
+        # A new reconciliation cohort cannot prove continuous quiet progress
+        # carried over from the excluded interval of a previous run.
         if below_since is not None and below_since < live_after:
             below_since = live_after
             self._set_below_since(incident["incident_id"], below_since)
         if below_since is None or self._intervening_spike(
-            samples, below_since, now, live_after, first, absolute_threshold,
+            samples, live_samples, below_since, now, first, absolute_threshold,
         ):
             self._set_below_since(incident["incident_id"], now)
             return None
@@ -189,18 +219,18 @@ class DetectionEngine:
             scope_id=incident["scope_id"], state="recovered", trigger=incident["trigger"],
             observed_rate=observed_rate, baseline_rate=baseline_rate,
             absolute_threshold=absolute_threshold, opened_at=opened_at, recovered_at=now,
-            token_breakdown=self._token_breakdown(samples, now, live_after),
+            token_breakdown=self._token_breakdown(live_samples, now),
         )
 
     def _intervening_spike(
-        self, samples: tuple[_TimedSample, ...], since: datetime, now: datetime,
-        live_after: datetime, first: datetime | None, absolute_threshold: float,
+        self, samples: tuple[_TimedSample, ...], live_samples: tuple[_TimedSample, ...],
+        since: datetime, now: datetime, first: datetime | None, absolute_threshold: float,
     ) -> bool:
         # Rates can rise at live sample arrivals. Relative thresholds can fall
         # when a completed bucket enters or an old bucket leaves the baseline.
         candidates = {since}
         candidates.update(
-            timestamp for timestamp, _ in samples if since < timestamp <= now and timestamp > live_after
+            timestamp for timestamp, _ in live_samples if since < timestamp <= now
         )
         width = self.config.rate_window_seconds
         for offset in (0, self.config.baseline_window_seconds):
@@ -216,7 +246,7 @@ class DetectionEngine:
                     candidates.add(boundary)
         return any(
             self._trigger(
-                self._observed_rate(samples, candidate, live_after),
+                self._observed_rate(live_samples, candidate),
                 self._baseline_rate(samples, candidate, first), absolute_threshold,
             ) is not None
             for candidate in sorted(candidates)
@@ -227,22 +257,22 @@ class DetectionEngine:
                      else self.config.session_absolute_tokens_per_minute)
 
     def _observed_rate(
-        self, samples: tuple[_TimedSample, ...], now: datetime, live_after: datetime,
+        self, samples: tuple[_TimedSample, ...], now: datetime,
     ) -> float:
         start = now - timedelta(seconds=self.config.rate_window_seconds)
         tokens = sum(
             item.total_tokens for timestamp, item in samples
-            if start <= timestamp <= now and timestamp > live_after
+            if start <= timestamp <= now
         )
         return tokens * 60.0 / self.config.rate_window_seconds
 
     def _token_breakdown(
-        self, samples: tuple[_TimedSample, ...], now: datetime, live_after: datetime,
+        self, samples: tuple[_TimedSample, ...], now: datetime,
     ) -> TokenBreakdown:
         start = now - timedelta(seconds=self.config.rate_window_seconds)
         current = tuple(
             item for timestamp, item in samples
-            if start <= timestamp <= now and timestamp > live_after
+            if start <= timestamp <= now
         )
         return TokenBreakdown(
             input_tokens=sum(item.input_tokens for item in current),

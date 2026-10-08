@@ -276,6 +276,44 @@ def test_history_can_inform_relative_baseline_without_opening_alerts(store: Tele
     assert all(item.baseline_rate == 40_000 for item in transitions)
 
 
+def test_ingestion_watermark_selects_late_live_usage_and_retains_historical_baseline(
+    store: TelemetryStore,
+) -> None:
+    baseline(store, [40_000, 40_000, 40_000])
+    ingest(store, [sample(2_000_000, 0)])
+    watermark = store.connection.execute("SELECT MAX(rowid) FROM usage_samples").fetchone()[0]
+    ingest(store, [sample(130_000, -10)])
+    config = replace(CONFIG, relative_minimum_tokens_per_minute=120_000)
+
+    transitions = DetectionEngine(store, config).evaluate(NOW, NOW, live_after_rowid=watermark)
+
+    assert [item.scope_type for item in transitions] == ["session", "aggregate"]
+    assert all(item.trigger == "relative" for item in transitions)
+    assert all(item.observed_rate == 130_000 for item in transitions)
+    assert all(item.baseline_rate == 40_000 for item in transitions)
+    assert all(item.token_breakdown.total_tokens == 130_000 for item in transitions)
+
+
+def test_ingestion_watermark_excludes_historical_bursts_from_recovery(
+    store: TelemetryStore,
+) -> None:
+    ingest(store, [sample(260_000, 90)])
+    watermark = store.connection.execute("SELECT MAX(rowid) FROM usage_samples").fetchone()[0]
+    ingest(store, [sample(260_000, 0)])
+    engine = DetectionEngine(store, RECOVERY_CONFIG)
+    opening = engine.evaluate(NOW, NOW, live_after_rowid=watermark)[0]
+    assert engine.evaluate(NOW + timedelta(seconds=61), NOW, live_after_rowid=watermark) == ()
+    ingest(store, [sample(17, 350)])
+
+    recovery = engine.evaluate(NOW + timedelta(seconds=361), NOW, live_after_rowid=watermark)
+
+    assert len(recovery) == 1
+    assert recovery[0].state == "recovered"
+    assert recovery[0].incident_id == opening.incident_id
+    assert recovery[0].observed_rate == 17
+    assert recovery[0].token_breakdown.total_tokens == 17
+
+
 def test_persisted_open_incident_does_not_resend_after_engine_or_store_restart(
     tmp_path: Path,
 ) -> None:
