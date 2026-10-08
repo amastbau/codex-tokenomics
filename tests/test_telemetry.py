@@ -128,6 +128,20 @@ def test_session_sources_classify_user_subagent_and_review_sessions(
     assert normalize_event(event, EVENT_CONTEXT)[0].agent_kind == expected
 
 
+@pytest.mark.parametrize("source,expected", [
+    ({"subagent": "review"}, "review"),
+    ({"internal": "guardian"}, "guardian"),
+])
+@pytest.mark.parametrize("thread_source", ["subagent", "user"])
+def test_specific_review_and_guardian_classification_survives_generic_thread_source(
+    source: object, expected: str, thread_source: str,
+) -> None:
+    event = fixture_events()[0]
+    event["payload"]["source"] = source
+    event["payload"]["thread_source"] = thread_source
+    assert normalize_event(event, EVENT_CONTEXT)[0].agent_kind == expected
+
+
 def test_token_count_never_emits_cumulative_usage_as_response_usage() -> None:
     event = fixture_events()[4]
     records = normalize_event(event, EVENT_CONTEXT)

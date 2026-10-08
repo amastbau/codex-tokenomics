@@ -171,7 +171,9 @@ def _normalize_session(
     if source_fields.get("internal") == "guardian":
         source, agent_kind = "internal", "guardian"
     thread_source = _enum(payload.get("thread_source"), {"user", "subagent", "guardian_review"})
-    if thread_source is not None:
+    if thread_source is not None and (
+        thread_source == "guardian_review" or agent_kind not in {"review", "guardian"}
+    ):
         agent_kind = "guardian" if thread_source == "guardian_review" else thread_source
     return (SessionRecord(
         session_id=session_id,
