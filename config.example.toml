@@ -1,0 +1,20 @@
+[paths]
+session_root = "~/.codex/sessions"
+database = "~/.local/share/codex-tokenomics/telemetry.db"
+
+[collector]
+poll_interval_seconds = 2
+
+[detector]
+session_absolute_tokens_per_minute = 250000
+aggregate_absolute_tokens_per_minute = 1000000
+relative_multiplier = 3.0
+relative_minimum_tokens_per_minute = 50000
+rate_window_seconds = 60
+baseline_window_seconds = 900
+minimum_baseline_buckets = 5
+recovery_seconds = 300
+
+[query]
+row_limit = 1000
+timeout_ms = 2000

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codex-tokenomics"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+codex-tokenomics = "codex_tokenomics.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.14"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_tokenomics"]
