@@ -1,0 +1,15 @@
+# Assisted-by: Codex
+[Unit]
+Description=Codex Tokenomics local dashboard
+After=codex-tokenomics.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/tokenomic/codex-tokenomics/dashboard
+ExecStart=/usr/bin/python -u %h/tokenomic/codex-tokenomics/dashboard/server.py --host 127.0.0.1 --port 8765
+UMask=0077
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

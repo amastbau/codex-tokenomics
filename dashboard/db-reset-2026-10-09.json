@@ -1,0 +1,34 @@
+{
+  "assisted_by": "Codex",
+  "reset_at_utc": "2026-10-08T22:26:16.695757+00:00",
+  "database": "/home/amastbau/.local/share/codex-tokenomics/telemetry.db",
+  "backup": "/home/amastbau/.local/share/codex-tokenomics/telemetry.before-reset-20261008T222616695757Z.db",
+  "backup_sha256": "e3fb86982249ab31e95c8a478857f48357c654861db6694ed795b2974fae4f2c",
+  "backup_integrity": "ok",
+  "before_counts": {
+    "notification_attempts": 228,
+    "alert_incidents": 46,
+    "tool_events": 17288,
+    "rate_limit_samples": 0,
+    "usage_samples": 18900,
+    "responses": 18900
+  },
+  "before_total_tokens": 2004902372,
+  "after_counts_at_reset": {
+    "notification_attempts": 0,
+    "alert_incidents": 0,
+    "tool_events": 0,
+    "rate_limit_samples": 0,
+    "usage_samples": 0,
+    "responses": 0
+  },
+  "after_total_tokens_at_reset": 0,
+  "preserved_metadata_counts": {
+    "sessions": 434,
+    "turns": 8427,
+    "ingest_cursors": 434,
+    "schema_migrations": 1
+  },
+  "cursor_positions_unchanged": true,
+  "note": "Usage and alerts cleared; model/session metadata and cursors retained. New activity resumes from preserved positions."
+}
