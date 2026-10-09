@@ -2,11 +2,18 @@
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from codex_tokenomics.storage import IngestCursor, TelemetryStore
 from codex_tokenomics.telemetry import EventContext, SessionRecord, TelemetryRecord, normalize_event
+
+ROLLOUT_ID = re.compile(
+    r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +40,10 @@ class Collector:
             if not path.is_file():
                 continue
             file_key = str(path)
+            match = ROLLOUT_ID.fullmatch(path.name)
+            # Forked rollouts can retain their ancestor's session_meta.id.
+            # The rollout filename still identifies the actual thread.
+            thread_id = match.group(1) if match else None
             previous = self.store.get_cursor(file_key)
             records: list[TelemetryRecord] = []
             file_failures = 0
@@ -64,7 +75,7 @@ class Collector:
                         file_failures += 1
                         continue
                     context = EventContext(
-                        path, identity.st_dev, identity.st_ino, line_offset, session_id,
+                        path, identity.st_dev, identity.st_ino, line_offset, session_id, thread_id,
                     )
                     normalized = normalize_event(event, context)
                     for record in normalized:

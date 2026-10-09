@@ -8,7 +8,7 @@ import pytest
 from codex_tokenomics.config import DetectorConfig
 from codex_tokenomics.detector import DetectionEngine
 from codex_tokenomics.storage import IngestCursor, TelemetryStore
-from codex_tokenomics.telemetry import UsageSample
+from codex_tokenomics.telemetry import SessionRecord, UsageSample
 
 NOW = datetime(2026, 10, 8, 12, tzinfo=UTC)
 LIVE_BOUNDARY = NOW - timedelta(hours=1)
@@ -43,7 +43,11 @@ def sample(
 
 
 def ingest(store: TelemetryStore, samples: Sequence[UsageSample]) -> None:
-    store.ingest(samples, IngestCursor(
+    metadata = [
+        SessionRecord(session_id, NOW.isoformat(), model_provider="openai")
+        for session_id in sorted({item.session_id for item in samples})
+    ]
+    store.ingest([*metadata, *samples], IngestCursor(
         file_key="fixture", source_path="/synthetic/session.jsonl", device=1, inode=2,
         offset=0, updated_at=NOW.isoformat(),
     ))

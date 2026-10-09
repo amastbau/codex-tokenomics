@@ -22,11 +22,10 @@ def test_valid_config_loads_every_required_detector_value(tmp_path: Path) -> Non
     config = load_config(path)
     assert config.detector.session_absolute_tokens_per_minute == 250_000
     assert config.detector.aggregate_absolute_tokens_per_minute == 1_000_000
-    assert config.notifications.email_recipient == "amastbau@redhat.com"
-    assert config.notifications.email_retry_delays_seconds == (10, 30)
     assert config.collector.poll_interval_seconds == 2
     assert config.query.row_limit == 1000
     assert config.query.timeout_ms == 2000
+    assert not hasattr(config, "notifications")
     for key, value in VALID_CONFIG["detector"].items():
         assert getattr(config.detector, key) == value
 
@@ -65,6 +64,18 @@ def test_non_mapping_section_is_rejected(section: str, value: object) -> None:
     data[section] = value
     with pytest.raises(ConfigError, match=section):
         validate_config(data)
+
+
+def test_deprecated_notifications_section_is_ignored_for_existing_installs() -> None:
+    data = copy.deepcopy(VALID_CONFIG)
+    data["notifications"] = {
+        "email_recipient": "someone@example.test",
+        "email_retry_delays_seconds": [10, 30],
+    }
+
+    config = validate_config(data)
+
+    assert not hasattr(config, "notifications")
 
 
 @pytest.mark.parametrize("section,key", NUMERIC_KEYS)
@@ -128,22 +139,6 @@ def test_invalid_paths_are_rejected(key: str, value: object) -> None:
         validate_config(data)
 
 
-@pytest.mark.parametrize("value", ["", "  ", 1, None])
-def test_empty_or_non_string_recipient_is_rejected(value: object) -> None:
-    data = copy.deepcopy(VALID_CONFIG)
-    data["notifications"]["email_recipient"] = value
-    with pytest.raises(ConfigError, match="email_recipient"):
-        validate_config(data)
-
-
-@pytest.mark.parametrize("value", [[], "10", None, [0], [-1], [True], ["10"], [float("nan")]])
-def test_invalid_retry_delays_are_rejected(value: object) -> None:
-    data = copy.deepcopy(VALID_CONFIG)
-    data["notifications"]["email_retry_delays_seconds"] = value
-    with pytest.raises(ConfigError, match="email_retry_delays_seconds"):
-        validate_config(data)
-
-
 def test_config_is_immutable_and_independent_of_input() -> None:
     data = copy.deepcopy(VALID_CONFIG)
     config = validate_config(data)
@@ -151,8 +146,6 @@ def test_config_is_immutable_and_independent_of_input() -> None:
         field = fields(instance)[0]
         with pytest.raises(FrozenInstanceError):
             setattr(instance, field.name, None)
-    data["notifications"]["email_retry_delays_seconds"].append(60)
-    assert config.notifications.email_retry_delays_seconds == (10, 30)
 
 
 def test_malformed_toml_has_a_configuration_error(tmp_path: Path) -> None:

@@ -80,6 +80,55 @@ def test_discovers_user_subagent_and_guardian_files(tmp_path: Path, store: Telem
     assert store.total_tokens() == 30
 
 
+def test_parent_session_payload_does_not_merge_user_subagent_and_guardian(
+    tmp_path: Path, store: TelemetryStore,
+) -> None:
+    root = tmp_path / "sessions"
+    for thread, kind, tokens in (
+        ("parent", "user", 100), ("child", "subagent", 50),
+        ("guardian", "guardian_review", 25),
+    ):
+        meta = metadata(thread, kind)
+        meta["payload"]["session_id"] = "parent"
+        if thread != "parent":
+            meta["payload"]["parent_thread_id"] = "parent"
+        sample = usage(f"response-{thread}", tokens, "parent")
+        sample["payload"]["thread_id"] = thread
+        write_rollout(root / f"{thread}.jsonl", meta, sample)
+
+    collector = Collector(root, store)
+    collector.scan_once()
+    collector.scan_once()
+
+    assert dict(store.connection.execute(
+        "SELECT s.agent_kind,SUM(u.total_tokens) FROM sessions s "
+        "JOIN usage_samples u ON u.session_id=s.session_id GROUP BY s.agent_kind"
+    )) == {"user": 100, "subagent": 50, "guardian": 25}
+    assert store.total_tokens() == 175
+    assert store.connection.execute(
+        "SELECT COUNT(*) FROM usage_samples WHERE session_id!=thread_id"
+    ).fetchone()[0] == 0
+
+
+def test_forked_rollouts_with_copied_parent_metadata_use_filename_thread(
+    tmp_path: Path, store: TelemetryStore,
+) -> None:
+    root = tmp_path / "sessions"
+    parent = "00000000-0000-7000-8000-000000000000"
+    child = "00000000-0000-7000-8000-000000000001"
+    for thread, kind, tokens in ((parent, "user", 100), (child, "guardian_review", 25)):
+        sample = usage(f"r-{thread}", tokens, parent)
+        sample["payload"]["thread_id"] = thread
+        write_rollout(root / f"rollout-2026-10-08T08-00-00-{thread}.jsonl",
+                      metadata(parent, kind), sample)
+    Collector(root, store).scan_once()
+    assert dict(store.connection.execute(
+        "SELECT s.agent_kind,SUM(u.total_tokens) FROM sessions s "
+        "JOIN usage_samples u ON u.session_id=s.session_id GROUP BY s.agent_kind"
+    )) == {"user": 100, "guardian": 25}
+    assert store.total_tokens() == 125
+
+
 def test_append_ingests_only_new_records_and_preserves_metadata_context(
     tmp_path: Path, store: TelemetryStore,
 ) -> None:

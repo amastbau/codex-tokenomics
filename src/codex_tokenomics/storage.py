@@ -398,14 +398,26 @@ class TelemetryStore:
 
     def usage_samples(
         self, start: str | datetime, end: str | datetime, session_id: str | None = None,
+        *, model_providers: tuple[str, ...] | None = None,
     ) -> tuple[UsageSample, ...]:
         """Read unique samples in the inclusive UTC interval, ordered deterministically."""
         parameters = [_utc_timestamp(start), _utc_timestamp(end)]
-        sql = "SELECT * FROM usage_samples WHERE observed_at>=? AND observed_at<=?"
+        sql = (
+            "SELECT u.* FROM usage_samples u "
+            "LEFT JOIN turns t ON t.session_id=u.session_id AND t.turn_id=u.turn_id "
+            "LEFT JOIN sessions s ON s.session_id=u.session_id "
+            "WHERE u.observed_at>=? AND u.observed_at<=?"
+        )
         if session_id is not None:
-            sql += " AND session_id=?"
+            sql += " AND u.session_id=?"
             parameters.append(session_id)
-        sql += " ORDER BY observed_at, session_id, response_id"
+        if model_providers is not None:
+            sql += (
+                " AND COALESCE(t.model_provider, s.model_provider) IN "
+                f"({','.join('?' for _ in model_providers)})"
+            )
+            parameters.extend(model_providers)
+        sql += " ORDER BY u.observed_at, u.session_id, u.response_id"
         return tuple(UsageSample(
             session_id=row["session_id"], timestamp=row["observed_at"],
             response_id=row["response_id"], thread_id=row["thread_id"], turn_id=row["turn_id"],

@@ -14,6 +14,10 @@ from codex_tokenomics.telemetry import UsageSample
 
 type _TimedSample = tuple[datetime, UsageSample]
 
+# Provider identity, rather than model name, determines alert eligibility.
+# A custom endpoint serving a GPT model must not inherit OpenAI's eligibility.
+ALERT_MODEL_PROVIDERS = ("openai", "anthropic", "google", "xai", "azure", "bedrock")
+
 
 @dataclass(frozen=True, slots=True)
 class TokenBreakdown:
@@ -82,7 +86,9 @@ class DetectionEngine:
                 )
         samples = tuple(
             (_utc(datetime.fromisoformat(item.timestamp)), item)
-            for item in self.store.usage_samples(history_start, now)
+            for item in self.store.usage_samples(
+                history_start, now, model_providers=ALERT_MODEL_PROVIDERS,
+            )
         )
         if live_after_rowid is None:
             live_samples = tuple(item for item in samples if item[0] > live_after)
@@ -151,10 +157,42 @@ class DetectionEngine:
                 ))
         return tuple(transitions)
 
+    def alert_is_allowed(self, transition: IncidentTransition) -> bool:
+        """Recheck opening eligibility before delivering legacy/retried alerts.
+
+        Persisted incidents may predate the provider policy. Evaluate their opening
+        window using eligible usage so neither retries nor recovery messages can
+        revive an alert caused by an excluded provider.
+        """
+        now = transition.opened_at
+        start = now - timedelta(seconds=self.config.baseline_window_seconds)
+        start = min(start, now - timedelta(seconds=self.config.rate_window_seconds))
+        session_id = transition.scope_id if transition.scope_type == "session" else None
+        samples = tuple(
+            (_utc(datetime.fromisoformat(item.timestamp)), item)
+            for item in self.store.usage_samples(
+                start, now, session_id, model_providers=ALERT_MODEL_PROVIDERS,
+            )
+        )
+        if not samples:
+            return False
+        firsts = self._first_observations(now)
+        first = firsts.get(session_id) if session_id is not None else min(
+            firsts.values(), default=None,
+        )
+        return self._trigger(
+            self._observed_rate(samples, now), self._baseline_rate(samples, now, first),
+            transition.absolute_threshold,
+        ) is not None
+
     def _first_observations(self, now: datetime) -> dict[str, datetime]:
         rows = self.store.connection.execute(
-            "SELECT session_id, MIN(observed_at) AS first_at FROM usage_samples "
-            "WHERE observed_at<=? GROUP BY session_id", (now.isoformat(),),
+            "SELECT u.session_id, MIN(u.observed_at) AS first_at FROM usage_samples u "
+            "LEFT JOIN turns t ON t.session_id=u.session_id AND t.turn_id=u.turn_id "
+            "LEFT JOIN sessions s ON s.session_id=u.session_id "
+            "WHERE u.observed_at<=? AND COALESCE(t.model_provider, s.model_provider) IN "
+            f"({','.join('?' for _ in ALERT_MODEL_PROVIDERS)}) GROUP BY u.session_id",
+            (now.isoformat(), *ALERT_MODEL_PROVIDERS),
         )
         return {row["session_id"]: datetime.fromisoformat(row["first_at"]) for row in rows}
 

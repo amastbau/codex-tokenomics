@@ -80,6 +80,15 @@ systemctl --user stop codex-tokenomics.service
 
 The service first reconciles historical rollout files without alerting, then establishes a live boundary. Only newly ingested live records can open incidents.
 
+Alerts accept only the provider IDs `openai`, `anthropic`, `google`, `xai`, `azure`,
+and `bedrock`. Custom providers such as `enmaas`, local endpoints, and missing
+provider identities do not generate notifications. Provider identity comes from
+the response's turn, falling back to its session; a GPT model name on an ENMAAS
+endpoint does not make it eligible. Excluded providers' tokens also stay out of
+session and aggregate alert rates and baselines. Their usage is still collected
+and shown in reports and the dashboard. Pending notifications and recoveries for
+older incidents are checked against this policy before delivery; history is kept.
+
 ## Health checks
 
 Use the health report for service state, database integrity, backlog, parse-failure counts, and notification failure counts:

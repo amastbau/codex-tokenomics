@@ -7,15 +7,8 @@ from pathlib import Path
 import pytest
 
 from codex_tokenomics import notifiers
-from codex_tokenomics.config import NotificationConfig
 from codex_tokenomics.detector import IncidentTransition, TokenBreakdown
-from codex_tokenomics.notifiers import (
-    AlertView,
-    CommandResult,
-    DesktopNotifier,
-    EmailNotifier,
-    SubprocessRunner,
-)
+from codex_tokenomics.notifiers import AlertView, CommandResult, DesktopNotifier, SubprocessRunner
 from codex_tokenomics.storage import IngestCursor, TelemetryStore
 from codex_tokenomics.telemetry import SessionRecord, TurnRecord
 
@@ -32,7 +25,6 @@ RECOVERY = replace(
     OPEN, state="recovered", observed_rate=0, recovered_at=NOW + timedelta(minutes=5),
     token_breakdown=TokenBreakdown(0, 0, 0, 0, 0, 0),
 )
-CONFIG = NotificationConfig("amastbau@redhat.com", (10, 30))
 
 
 class FakeRunner:
@@ -63,9 +55,6 @@ class FakeClock:
         self.sleeps.append(seconds)
         self.current += timedelta(seconds=seconds)
 
-    def advance(self, seconds: float) -> None:
-        self.current += timedelta(seconds=seconds)
-
 
 @pytest.fixture
 def store(tmp_path: Path) -> Iterator[TelemetryStore]:
@@ -73,27 +62,27 @@ def store(tmp_path: Path) -> Iterator[TelemetryStore]:
         yield opened
 
 
-def test_email_contains_only_transition_telemetry_and_disclosure() -> None:
-    runner = FakeRunner()
-    assert EmailNotifier(runner, "amastbau@redhat.com").send(OPEN) == "sent"
-    argv = runner.calls_named("gws")[0]
-    assert argv[:5] == ["gws", "gmail", "+send", "--to", "amastbau@redhat.com"]
-    assert len(argv) == 9
-    assert argv[5] == "--subject"
-    assert argv[7] == "--body"
-    body = argv[8]
-    for value in ("incident-1", "session-1", "absolute+relative", "260000", "40000", "250000",
-                  "2026-10-08T12:00:00+00:00", DISCLOSURE):
-        assert value in body
-    assert SECRET not in body
+def open_incident(store: TelemetryStore, transition: IncidentTransition = OPEN) -> None:
+    store.open_incident(
+        incident_id=transition.incident_id, scope_type=transition.scope_type,
+        scope_id=transition.scope_id, trigger=transition.trigger,
+        observed_rate=transition.observed_rate, baseline_rate=transition.baseline_rate,
+        absolute_threshold=transition.absolute_threshold, opened_at=transition.opened_at,
+    )
 
 
-def test_email_validation_appends_dry_run_and_returns_non_delivery() -> None:
-    runner = FakeRunner()
-    assert EmailNotifier(runner, "amastbau@redhat.com").validate(OPEN) == "dry_run"
-    assert len(runner.calls) == 1
-    assert runner.calls[0][:3] == ["gws", "gmail", "+send"]
-    assert runner.calls[0][-1] == "--dry-run"
+def dispatcher(
+    runner: FakeRunner, store: TelemetryStore, clock: FakeClock | None = None,
+) -> notifiers.NotificationDispatcher:
+    return notifiers.NotificationDispatcher(
+        store, DesktopNotifier(runner), clock=clock or FakeClock(),
+    )
+
+
+def attempts(store: TelemetryStore) -> list[tuple[str, int, str]]:
+    return [tuple(row) for row in store.connection.execute(
+        "SELECT channel, attempt_number, outcome_code FROM notification_attempts ORDER BY attempt_id"
+    )]
 
 
 def test_desktop_open_uses_critical_argv_and_recovery_uses_normal() -> None:
@@ -132,8 +121,8 @@ def test_alert_enriches_only_agent_kind_and_latest_non_null_model(store: Telemet
     ], IngestCursor("metadata", "/synthetic/session.jsonl", 1, 2, 0))
     alert = AlertView.from_transition(OPEN, store)
     runner = FakeRunner()
-    EmailNotifier(runner, "amastbau@redhat.com").send(alert)
-    body = runner.calls[0][8]
+    DesktopNotifier(runner).send_open(alert)
+    body = runner.calls[0][4]
     assert "Agent kind: reviewer" in body
     assert "Model: gpt-6" in body
     assert "old-model" not in body
@@ -143,9 +132,9 @@ def test_alert_enriches_only_agent_kind_and_latest_non_null_model(store: Telemet
 def test_aggregate_alert_labels_model_and_agent_as_multiple(store: TelemetryStore) -> None:
     alert = AlertView.from_transition(replace(OPEN, scope_type="aggregate", scope_id="all"), store)
     runner = FakeRunner()
-    EmailNotifier(runner, "amastbau@redhat.com").send(alert)
-    assert "Agent kind: multiple" in runner.calls[0][8]
-    assert "Model: multiple" in runner.calls[0][8]
+    DesktopNotifier(runner).send_open(alert)
+    assert "Agent kind: multiple" in runner.calls[0][4]
+    assert "Model: multiple" in runner.calls[0][4]
 
 
 def test_missing_session_metadata_is_unknown_and_lookup_is_parameterized(
@@ -153,21 +142,21 @@ def test_missing_session_metadata_is_unknown_and_lookup_is_parameterized(
 ) -> None:
     alert = AlertView.from_transition(replace(OPEN, scope_id="' OR 1=1 --"), store)
     runner = FakeRunner()
-    EmailNotifier(runner, "amastbau@redhat.com").send(alert)
-    assert "Agent kind: unknown" in runner.calls[0][8]
-    assert "Model: unknown" in runner.calls[0][8]
+    DesktopNotifier(runner).send_open(alert)
+    assert "Agent kind: unknown" in runner.calls[0][4]
+    assert "Model: unknown" in runner.calls[0][4]
 
 
 @pytest.mark.parametrize(("result", "outcome"), [
     (CommandResult(7, SECRET, SECRET), "failed"),
     (FileNotFoundError(SECRET), "unavailable"),
     (PermissionError(SECRET), "failed"),
-    (subprocess.TimeoutExpired("gws", 12, output=SECRET, stderr=SECRET), "timeout"),
+    (subprocess.TimeoutExpired("notify-send", 12, output=SECRET, stderr=SECRET), "timeout"),
 ])
 def test_command_failures_reduce_to_fixed_codes_without_output(
     result: CommandResult | Exception, outcome: str, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert EmailNotifier(FakeRunner([result]), "amastbau@redhat.com").send(OPEN) == outcome
+    assert DesktopNotifier(FakeRunner([result])).send_open(OPEN) == outcome
     captured = capsys.readouterr()
     assert SECRET not in captured.out + captured.err
 
@@ -187,32 +176,7 @@ def test_subprocess_runner_passes_argv_with_shell_disabled(monkeypatch: pytest.M
     })]
 
 
-def open_incident(store: TelemetryStore, transition: IncidentTransition = OPEN) -> None:
-    store.open_incident(
-        incident_id=transition.incident_id, scope_type=transition.scope_type,
-        scope_id=transition.scope_id, trigger=transition.trigger,
-        observed_rate=transition.observed_rate, baseline_rate=transition.baseline_rate,
-        absolute_threshold=transition.absolute_threshold, opened_at=transition.opened_at,
-    )
-
-
-def dispatcher(
-    runner: FakeRunner, store: TelemetryStore, clock: FakeClock | None = None,
-    config: NotificationConfig = CONFIG,
-):
-    return notifiers.NotificationDispatcher(
-        store, DesktopNotifier(runner), EmailNotifier(runner, config.email_recipient), config,
-        clock=clock or FakeClock(),
-    )
-
-
-def attempts(store: TelemetryStore) -> list[tuple[str, int, str]]:
-    return [tuple(row) for row in store.connection.execute(
-        "SELECT channel, attempt_number, outcome_code FROM notification_attempts ORDER BY attempt_id"
-    )]
-
-
-def test_open_dispatch_sends_one_desktop_and_email_and_persists_success(
+def test_open_dispatch_sends_one_desktop_attempt_and_never_calls_gmail(
     store: TelemetryStore,
 ) -> None:
     open_incident(store)
@@ -221,66 +185,8 @@ def test_open_dispatch_sends_one_desktop_and_email_and_persists_success(
     dispatch.dispatch(OPEN)
     dispatch.dispatch(OPEN)
     assert len(runner.calls_named("notify-send")) == 1
-    assert len(runner.calls_named("gws")) == 1
-    assert attempts(store) == [("desktop", 1, "sent"), ("email", 1, "sent")]
-
-
-def test_email_failure_retries_follow_configured_delays_and_exhaust_budget(
-    store: TelemetryStore,
-) -> None:
-    open_incident(store)
-    runner = FakeRunner([CommandResult(0, "", ""), *[CommandResult(1, SECRET, SECRET)] * 3])
-    clock = FakeClock()
-    dispatch = dispatcher(runner, store, clock)
-    dispatch.dispatch(OPEN)
-    dispatch.dispatch(OPEN)
-    clock.advance(10)
-    dispatch.dispatch(OPEN)
-    clock.advance(30)
-    dispatch.dispatch(OPEN)
-    assert clock.sleeps == []
-    assert len(runner.calls_named("gws")) == 3
-    assert attempts(store) == [
-        ("desktop", 1, "sent"), ("email", 1, "failed"),
-        ("email", 2, "failed"), ("email", 3, "failed"),
-    ]
-    assert store.health_snapshot()["notification_failures"] == 3
-    times = [row[0] for row in store.connection.execute(
-        "SELECT attempted_at FROM notification_attempts WHERE channel='email' ORDER BY attempt_number"
-    )]
-    assert [datetime.fromisoformat(value) for value in times] == [
-        NOW, NOW + timedelta(seconds=10), NOW + timedelta(seconds=40),
-    ]
-
-
-def test_retries_stop_immediately_after_first_success(store: TelemetryStore) -> None:
-    open_incident(store)
-    runner = FakeRunner([CommandResult(0, "", ""), CommandResult(1, SECRET, SECRET)])
-    clock = FakeClock()
-    dispatch = dispatcher(runner, store, clock)
-    dispatch.dispatch(OPEN)
-    clock.advance(10)
-    dispatch.dispatch(OPEN)
-    assert len(runner.calls_named("gws")) == 2
-    assert clock.sleeps == []
-    assert attempts(store)[-1] == ("email", 2, "sent")
-
-
-def test_altered_retry_config_controls_attempt_count_and_delays(store: TelemetryStore) -> None:
-    open_incident(store)
-    runner = FakeRunner([CommandResult(1, SECRET, SECRET)] * 5)
-    clock = FakeClock()
-    dispatch = dispatcher(
-        runner, store, clock, NotificationConfig("someone@example.org", (2, 7, 11)),
-    )
-    dispatch.dispatch(OPEN)
-    for seconds in (2, 7, 11):
-        clock.advance(seconds)
-        dispatch.dispatch(OPEN)
-    assert len(runner.calls_named("notify-send")) == 1
-    assert len(runner.calls_named("gws")) == 4
-    assert clock.sleeps == []
-    assert all(argv[4] == "someone@example.org" for argv in runner.calls_named("gws"))
+    assert runner.calls_named("gws") == []
+    assert attempts(store) == [("desktop", 1, "sent")]
 
 
 def test_persisted_success_suppresses_deliveries_after_real_store_restart(tmp_path: Path) -> None:
@@ -292,65 +198,7 @@ def test_persisted_success_suppresses_deliveries_after_real_store_restart(tmp_pa
         runner = FakeRunner()
         dispatcher(runner, second).dispatch(OPEN)
         assert runner.calls == []
-        assert len(attempts(second)) == 2
-
-
-def test_failed_email_restart_resumes_remaining_delay_and_attempt_budget(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "telemetry.db"
-    with TelemetryStore.open(path) as first:
-        open_incident(first)
-        first.record_notification_attempt(
-            incident_id="incident-1", channel="desktop", attempted_at=NOW,
-            attempt_number=1, outcome_code="sent",
-        )
-        first.record_notification_attempt(
-            incident_id="incident-1", channel="email", attempted_at=NOW,
-            attempt_number=1, outcome_code="failed",
-        )
-    with TelemetryStore.open(path) as second:
-        runner = FakeRunner([CommandResult(1, SECRET, SECRET)] * 2)
-        clock = FakeClock(NOW + timedelta(seconds=4))
-        dispatch = dispatcher(runner, second, clock)
-        dispatch.dispatch(OPEN)
-        assert runner.calls_named("gws") == []
-        clock.advance(6)
-        dispatch.dispatch(OPEN)
-        clock.advance(30)
-        dispatch.dispatch(OPEN)
-        assert len(runner.calls_named("gws")) == 2
-        assert clock.sleeps == []
-        assert attempts(second)[-1] == ("email", 3, "failed")
-        dispatcher(FakeRunner(), second).dispatch(OPEN)
-        assert len(attempts(second)) == 4
-
-
-def test_restart_does_not_delay_retry_that_is_already_due(store: TelemetryStore) -> None:
-    open_incident(store)
-    store.record_notification_attempt(
-        incident_id="incident-1", channel="email", attempted_at=NOW,
-        attempt_number=1, outcome_code="timeout",
-    )
-    clock = FakeClock(NOW + timedelta(seconds=12))
-    runner = FakeRunner()
-    dispatcher(runner, store, clock).dispatch(OPEN)
-    assert clock.sleeps == []
-    assert attempts(store)[-1] == ("email", 2, "sent")
-
-
-@pytest.mark.parametrize("outcome", ["dry_run", "skipped"])
-def test_dispatch_retries_only_previously_failed_delivery(
-    store: TelemetryStore, outcome: str,
-) -> None:
-    open_incident(store)
-    store.record_notification_attempt(
-        incident_id="incident-1", channel="email", attempted_at=NOW,
-        attempt_number=1, outcome_code=outcome,
-    )
-    runner = FakeRunner()
-    dispatcher(runner, store).dispatch(OPEN)
-    assert runner.calls_named("gws") == []
+        assert len(attempts(second)) == 1
 
 
 def test_recovery_sends_only_desktop_and_survives_restart(tmp_path: Path) -> None:
@@ -362,7 +210,7 @@ def test_recovery_sends_only_desktop_and_survives_restart(tmp_path: Path) -> Non
         dispatch.dispatch(OPEN)
         first.recover_incident("incident-1", RECOVERY.recovered_at)
         dispatch.dispatch(RECOVERY)
-        assert len(runner.calls_named("gws")) == 1
+        assert runner.calls_named("gws") == []
         assert len(runner.calls_named("notify-send")) == 2
         assert attempts(first)[-1] == ("desktop", 2, "sent")
     with TelemetryStore.open(path) as second:
@@ -371,7 +219,7 @@ def test_recovery_sends_only_desktop_and_survives_restart(tmp_path: Path) -> Non
         assert runner.calls == []
 
 
-def test_recovery_without_open_delivery_does_not_send_open_or_email(store: TelemetryStore) -> None:
+def test_recovery_without_open_delivery_does_not_send_open(store: TelemetryStore) -> None:
     open_incident(store)
     store.recover_incident("incident-1", RECOVERY.recovered_at)
     runner = FakeRunner()
@@ -381,7 +229,7 @@ def test_recovery_without_open_delivery_does_not_send_open_or_email(store: Telem
     assert attempts(store) == [("desktop", 2, "sent")]
 
 
-def test_failed_desktop_does_not_retry_or_block_email_or_recovery(store: TelemetryStore) -> None:
+def test_failed_desktop_does_not_retry_or_block_recovery(store: TelemetryStore) -> None:
     open_incident(store)
     runner = FakeRunner([FileNotFoundError(SECRET)])
     dispatch = dispatcher(runner, store)
@@ -390,12 +238,12 @@ def test_failed_desktop_does_not_retry_or_block_email_or_recovery(store: Telemet
     store.recover_incident("incident-1", RECOVERY.recovered_at)
     dispatch.dispatch(RECOVERY)
     assert attempts(store) == [
-        ("desktop", 1, "unavailable"), ("email", 1, "sent"), ("desktop", 2, "sent"),
+        ("desktop", 1, "unavailable"), ("desktop", 2, "sent"),
     ]
     assert len(runner.calls_named("notify-send")) == 2
 
 
-def test_new_incident_id_rearms_each_channel(store: TelemetryStore) -> None:
+def test_new_incident_id_rearms_desktop_channel(store: TelemetryStore) -> None:
     later = replace(OPEN, incident_id="incident-2", opened_at=NOW + timedelta(minutes=10))
     open_incident(store)
     open_incident(store, later)
@@ -404,14 +252,14 @@ def test_new_incident_id_rearms_each_channel(store: TelemetryStore) -> None:
     dispatch.dispatch(OPEN)
     dispatch.dispatch(later)
     assert len(runner.calls_named("notify-send")) == 2
-    assert len(runner.calls_named("gws")) == 2
+    assert runner.calls_named("gws") == []
 
 
 def test_notification_attempt_storage_and_logs_exclude_raw_outputs(
     store: TelemetryStore, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture,
 ) -> None:
     open_incident(store)
-    runner = FakeRunner([PermissionError(SECRET), *[CommandResult(1, SECRET, SECRET)] * 3])
+    runner = FakeRunner([PermissionError(SECRET)])
     dispatcher(runner, store).dispatch(OPEN)
     rows = list(store.connection.execute("SELECT * FROM notification_attempts"))
     assert SECRET not in repr([tuple(row) for row in rows])
@@ -436,12 +284,6 @@ def test_dispatcher_enriches_session_metadata_before_delivering(store: Telemetry
     assert all("Model: gpt-6" in argv[-1] for argv in runner.calls)
 
 
-def test_email_adapter_skips_recovery_without_executing_gmail() -> None:
-    runner = FakeRunner()
-    assert EmailNotifier(runner, "amastbau@redhat.com").send(RECOVERY) == "skipped"
-    assert runner.calls == []
-
-
 def test_replayed_open_after_persisted_recovery_sends_no_notifications(
     store: TelemetryStore,
 ) -> None:
@@ -451,25 +293,6 @@ def test_replayed_open_after_persisted_recovery_sends_no_notifications(
     dispatcher(runner, store).dispatch(OPEN)
     assert runner.calls == []
     assert attempts(store) == []
-
-
-@pytest.mark.parametrize(("failure", "outcome"), [
-    (FileNotFoundError(SECRET), "unavailable"),
-    (subprocess.TimeoutExpired("gws", 4, output=SECRET, stderr=SECRET), "timeout"),
-])
-def test_unavailable_and_timeout_email_attempts_are_persisted_and_retried(
-    store: TelemetryStore, failure: Exception, outcome: str,
-) -> None:
-    open_incident(store)
-    runner = FakeRunner([CommandResult(0, "", ""), failure])
-    clock = FakeClock()
-    dispatch = dispatcher(runner, store, clock)
-    dispatch.dispatch(OPEN)
-    clock.advance(10)
-    dispatch.dispatch(OPEN)
-    assert attempts(store) == [("desktop", 1, "sent"), ("email", 1, outcome), ("email", 2, "sent")]
-    assert clock.sleeps == []
-    assert store.health_snapshot()["notification_failures"] == 1
 
 
 def test_failed_recovery_desktop_is_not_retried(store: TelemetryStore) -> None:
@@ -485,17 +308,13 @@ def test_failed_recovery_desktop_is_not_retried(store: TelemetryStore) -> None:
 def test_unknown_baseline_and_utc_timestamps_render_without_invented_rates() -> None:
     transition = replace(OPEN, baseline_rate=None)
     runner = FakeRunner()
-    EmailNotifier(runner, "amastbau@redhat.com").send(transition)
-    assert "Baseline rate: unknown" in runner.calls[0][8]
+    DesktopNotifier(runner).send_open(transition)
+    assert "Baseline rate: unknown" in runner.calls[0][4]
 
 
-@pytest.mark.parametrize("channel", ["desktop", "email"])
-def test_alert_renders_each_current_window_token_category_independently(channel: str) -> None:
+def test_alert_renders_each_current_window_token_category_independently() -> None:
     runner = FakeRunner()
-    if channel == "desktop":
-        DesktopNotifier(runner).send_open(OPEN)
-    else:
-        EmailNotifier(runner, "amastbau@redhat.com").send(OPEN)
+    DesktopNotifier(runner).send_open(OPEN)
     body = runner.calls[0][-1]
     for expected in (
         "Input tokens: 210000", "Cached input tokens: 120000", "Cache-write input tokens: 40000",

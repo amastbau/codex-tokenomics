@@ -22,6 +22,7 @@ class EventContext:
     inode: int
     byte_offset: int
     session_id: str | None
+    thread_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,14 +149,23 @@ def _timestamp(event: Mapping[str, object]) -> str | None:
 
 
 def _session_id(payload: Mapping[str, object], context: EventContext) -> str | None:
-    return _string(payload.get("session_id")) or _string(context.session_id)
+    # Child rollouts may report their parent's session_id. Their own metadata
+    # establishes the identity used for all subsequent records in that file.
+    return (
+        _string(payload.get("thread_id")) or _string(context.thread_id)
+        or _string(context.session_id)
+        or _string(payload.get("session_id"))
+    )
 
 
 def _normalize_session(
     event: Mapping[str, object], context: EventContext,
 ) -> tuple[TelemetryRecord, ...]:
     payload = _mapping(event.get("payload"))
-    session_id = _string(payload.get("session_id")) or _string(payload.get("id"))
+    session_id = (
+        _string(context.thread_id) or _string(payload.get("id"))
+        or _string(payload.get("session_id"))
+    )
     timestamp = _timestamp(event)
     if session_id is None or timestamp is None:
         return ()
@@ -180,7 +190,7 @@ def _normalize_session(
     return (SessionRecord(
         session_id=session_id,
         timestamp=timestamp,
-        thread_id=_string(payload.get("id")),
+        thread_id=session_id,
         parent_thread_id=parent_thread_id,
         source=source,
         agent_kind=agent_kind,

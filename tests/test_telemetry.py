@@ -56,6 +56,28 @@ def test_token_usage_record_normalizes_only_numeric_telemetry() -> None:
     )
 
 
+def test_child_metadata_uses_its_thread_identity_not_parent_session() -> None:
+    event = fixture_events()[0]
+    event["payload"].update(id="child-thread", session_id="parent-session")
+    record = normalize_event(event, EVENT_CONTEXT)[0]
+    assert record.session_id == "child-thread"
+    assert record.thread_id == "child-thread"
+
+
+def test_child_usage_and_turn_keep_rollout_identity_with_parent_session_payload() -> None:
+    context = replace(EVENT_CONTEXT, session_id="child-thread")
+    for event in (token_usage_event(), fixture_events()[1]):
+        event["payload"]["session_id"] = "parent-session"
+        event["payload"]["thread_id"] = "child-thread"
+        assert normalize_event(event, context)[0].session_id == "child-thread"
+
+
+def test_explicit_usage_thread_wins_over_ancestor_rollout_context() -> None:
+    event = token_usage_event()
+    event["payload"].update(session_id="parent", thread_id="child")
+    assert normalize_event(event, EVENT_CONTEXT)[0].session_id == "child"
+
+
 def test_nested_prohibited_content_never_survives_normalization(capsys) -> None:
     records = normalized_fixture_records()
     serialized = json.dumps([asdict(record) for record in records], sort_keys=True)
@@ -265,7 +287,7 @@ def test_records_are_immutable_and_do_not_reference_mutable_source_data() -> Non
         with pytest.raises(FrozenInstanceError):
             setattr(item, fields(item)[0].name, None)
     assert [field.name for field in fields(EVENT_CONTEXT)] == [
-        "source_path", "device", "inode", "byte_offset", "session_id",
+        "source_path", "device", "inode", "byte_offset", "session_id", "thread_id",
     ]
 
 

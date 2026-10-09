@@ -151,7 +151,9 @@ class MonitorService:
                 detected = self.detector.evaluate(
                     self._now(), boundary.started_at, live_after_rowid=self._live_usage_rowid,
                 )
-                transitions = (*pending, *detected)
+                transitions = tuple(
+                    item for item in (*pending, *detected) if self.detector.alert_is_allowed(item)
+                )
                 stage = "dispatch_failed"
                 for transition in transitions:
                     self.dispatcher.dispatch(transition)

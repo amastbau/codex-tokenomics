@@ -164,18 +164,19 @@ def test_validate_config_prints_explicit_detector_values(configured: tuple[Path,
     assert code == 0, stderr
     values = json.loads(stdout)
     assert values["detector"]["session_absolute_tokens_per_minute"] == 250_000
-    assert values["notifications"]["email_recipient"] == "amastbau@redhat.com"
+    assert "notifications" not in values
 
 
-def test_email_notification_test_is_always_dry_run(configured: tuple[Path, Path]) -> None:
+def test_email_notification_test_option_is_removed(configured: tuple[Path, Path]) -> None:
     config, _ = configured
     runner = FakeRunner()
     code, stdout, stderr = invoke([
         "notification-test", "--config", str(config), "--email-dry-run", "--format", "json",
     ], runner=runner)
-    assert code == 0, stderr
-    assert json.loads(stdout)["email"] == "dry_run"
-    assert runner.only_call("gws")[-1] == "--dry-run"
+    assert code == 2
+    assert stdout == ""
+    assert "email-dry-run" in stderr
+    assert runner.calls == []
 
 
 def test_desktop_notification_test_uses_one_safe_argv(configured: tuple[Path, Path]) -> None:
