@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Tokenomics UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #09111f;
+      --panel: #101a2e;
+      --panel-2: #15223a;
+      --text: #edf4ff;
+      --muted: #9fb0c7;
+      --accent: #7dd3fc;
+      --green: #86efac;
+      --amber: #fbbf24;
+      --red: #fca5a5;
+      --border: #263854;
+      --shadow: rgba(0, 0, 0, 0.28);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #123459 0, var(--bg) 34rem);
+      color: var(--text);
+    }
+    header {
+      padding: 2rem clamp(1rem, 4vw, 3rem) 1rem;
+      display: flex;
+      gap: 1rem;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3.2rem); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 1rem; font-size: 1.05rem; color: var(--accent); }
+    p { color: var(--muted); line-height: 1.55; }
+    button, input {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 0.7rem;
+      padding: 0.7rem 0.9rem;
+    }
+    button { cursor: pointer; font-weight: 700; }
+    button:hover { border-color: var(--accent); }
+    main { padding: 0 clamp(1rem, 4vw, 3rem) 3rem; }
+    .grid { display: grid; gap: 1rem; }
+    .cards { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), transparent), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1rem;
+      box-shadow: 0 1rem 2rem var(--shadow);
+    }
+    .card .value { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.04em; }
+    .card .label { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
+    .status {
+      display: inline-flex;
+      gap: 0.5rem;
+      align-items: center;
+      border-radius: 999px;
+      padding: 0.35rem 0.7rem;
+      background: rgba(134, 239, 172, 0.12);
+      color: var(--green);
+      border: 1px solid rgba(134, 239, 172, 0.24);
+      font-weight: 700;
+    }
+    .status.bad { color: var(--red); background: rgba(252,165,165,0.12); border-color: rgba(252,165,165,0.24); }
+    .toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+    .model-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin: 1rem 0; }
+    .model-filters fieldset { border: 1px solid var(--border); border-radius: .7rem; min-width: 0; }
+    .model-filters legend { color: var(--accent); padding: 0 .4rem; }
+    .model-choices { max-height: 15rem; overflow-y: auto; }
+    .model-choices label { display: flex; align-items: center; gap: .6rem; padding: .4rem; overflow-wrap: anywhere; cursor: pointer; }
+    .model-choices input { accent-color: var(--accent); flex-shrink: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.7rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    th button {
+      appearance: none;
+      background: transparent;
+      border: 0;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      padding: 0;
+      text-align: left;
+      text-transform: inherit;
+      letter-spacing: inherit;
+    }
+    th button:hover { color: var(--accent); }
+    code {
+      background: #07101d;
+      border: 1px solid var(--border);
+      border-radius: 0.45rem;
+      padding: 0.12rem 0.35rem;
+      color: #d7ecff;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #07101d;
+      border: 1px solid var(--border);
+      border-radius: 0.8rem;
+      padding: 1rem;
+      overflow: auto;
+    }
+    .muted { color: var(--muted); }
+    a { color: var(--accent); }
+    .table-wrap { overflow-x: auto; }
+    details summary { cursor: pointer; color: var(--accent); }
+    .row { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 1rem; align-items: start; }
+    .bar { height: 0.55rem; border-radius: 1rem; background: #1e2e49; overflow: hidden; }
+    .bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), #c084fc); }
+    .price-chart { overflow-x: auto; margin: 1rem 0 1.5rem; }
+    .price-chart-body { min-width: 34rem; }
+    .price-chart-legend { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .price-swatch { display: inline-block; width: .7rem; height: .7rem; border-radius: .2rem; margin-right: .4rem; }
+    .price-chart-axis { display: flex; justify-content: space-between; margin: 0 9.75rem .5rem 10rem; font-size: .75rem; color: var(--muted); }
+    .price-chart-model { display: grid; grid-template-columns: 9rem minmax(16rem, 1fr); gap: 1rem; padding: .8rem 0; border-bottom: 1px solid var(--border); }
+    .price-chart-sample { display: grid; grid-template-columns: minmax(6rem, 1fr) 9rem; align-items: center; gap: .75rem; margin: .3rem 0; }
+    .price-chart-track { height: .7rem; background: #1e2e49; border-left: 1px solid var(--muted); }
+    .price-chart-bar { height: 100%; border-radius: 0 .2rem .2rem 0; }
+    .price-chart-value { font-size: .8rem; font-variant-numeric: tabular-nums; color: var(--muted); }
+    .pill { display: inline-block; padding: 0.18rem 0.45rem; border-radius: 99px; background: #1c2c47; color: var(--muted); font-size: 0.78rem; }
+    .active { color: var(--amber); }
+    .recovered { color: var(--green); }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Codex Tokenomics</h1>
+      <p>Live read-only dashboard for local, content-free Codex telemetry.</p>
+      <p class="muted">Privacy boundary: this UI reads aggregate/session metadata and token counters only. It does not read prompts, responses, tool arguments, tool outputs, reasoning content, or <code>~/.codex/sessions</code>.</p>
+    </div>
+    <div class="toolbar">
+      <label class="muted">From <input id="from-date" type="datetime-local" aria-label="From date"></label>
+      <label class="muted">To <input id="to-date" type="datetime-local" aria-label="To date"></label>
+      <button id="clear-range">Clear range</button>
+      <button id="refresh">Refresh</button>
+      <span id="status" class="status">Loading…</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <details class="panel" open>
+      <summary>Global model filters · <span id="model-filter-summary">All models</span></summary>
+      <p class="muted">Include selected models or leave Include empty for all. Exclude always takes priority. Applies across the dashboard and stays saved in this browser.</p>
+      <div id="model-filter-options" class="model-filters"></div>
+      <button id="clear-models" type="button">Clear model filters</button>
+      <p id="model-filter-note" class="muted" hidden>Collector health stays global. Session alerts use the model recorded when they opened and retain their original rates. Aggregate alerts are hidden while model filters are active.</p>
+    </details>
+    <section class="grid cards" id="cards"></section>
+
+    <section class="panel">
+      <h2>Estimated API token cost (USD)</h2>
+      <div id="pricing"></div>
+    </section>
+
+    <section class="row">
+      <div class="panel">
+        <h2>Active incidents</h2>
+        <div id="active-incidents"></div>
+      </div>
+      <div class="panel">
+        <h2>Health</h2>
+        <div id="health"></div>
+      </div>
+    </section>
+
+    <section class="row">
+      <div class="panel">
+        <h2>Agent breakdown</h2>
+        <div id="agents" class="table-wrap"></div>
+      </div>
+      <div class="panel">
+        <h2>Model breakdown</h2>
+        <div id="models" class="table-wrap"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar" style="justify-content: space-between; margin-bottom: 1rem;">
+        <h2 style="margin:0">Sessions</h2>
+        <input id="session-filter" placeholder="Filter sessions, kind, model…" aria-label="Filter sessions">
+      </div>
+      <p class="muted">Sessions, tokens, and estimated USD use the global filters. Session dates describe the full session; model names show matching responses when model filters are active.</p>
+      <div id="sessions" class="table-wrap"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Incident history</h2>
+      <div id="incidents"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Recent usage timeline</h2>
+      <div id="usage"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Run locally</h2>
+      <pre>cd /home/amastbau/tokenomic/codex-tokenomics/dashboard
+python server.py
+# then open http://127.0.0.1:8765/</pre>
+      <p class="muted">Use <code>python server.py --db /path/to/telemetry.db --port 8765</code> to point at another database. The backend opens SQLite in read-only mode.</p>
+    </section>
+  </main>
+
+  <script>
+    const fmt = new Intl.NumberFormat();
+    let state = null;
+    let loadSequence = 0;
+    const sortState = {};
+    const modelFilters = {include: new Set(), exclude: new Set()};
+    try {
+      const saved = JSON.parse(localStorage.getItem("codex-tokenomics-model-filters") || "{}");
+      for (const kind of ["include", "exclude"]) {
+        if (Array.isArray(saved?.[kind])) {
+          modelFilters[kind] = new Set(saved[kind].filter((model) => typeof model === "string"));
+        }
+      }
+    } catch (_) { /* Filtering still works when browser storage is unavailable. */ }
+
+    const $ = (id) => document.getElementById(id);
+    const n = (value) => fmt.format(value ?? 0);
+    const date = (value) => value ? new Date(value).toLocaleString() : "unknown";
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[ch]));
+
+    function usd(value, exact = false) {
+      if (value == null) return "Unavailable";
+      return new Intl.NumberFormat("en-US", {
+        style: "currency", currency: "USD", minimumFractionDigits: 2,
+        maximumFractionDigits: exact || (value > 0 && value < 0.01) ? 6 : 2,
+      }).format(value);
+    }
+
+    function costLabel(row) {
+      if (row.unpriced_responses > 0) {
+        return row.known_cost_usd > 0 ? `${usd(row.known_cost_usd)} + unpriced` : "Unpriced";
+      }
+      return usd(row.estimated_usd);
+    }
+
+    function pricePerToken(ratePerMillion) {
+      if (ratePerMillion == null) return "Unavailable";
+      return new Intl.NumberFormat("en-US", {
+        style: "currency", currency: "USD", minimumFractionDigits: 2,
+        maximumFractionDigits: 12,
+      }).format(ratePerMillion / 1_000_000);
+    }
+
+    function renderPriceChart(rates) {
+      if (!rates.length) return '<p class="muted">No published prices available.</p>';
+      const categories = [
+        ["input", "Uncached input", "#7dd3fc"],
+        ["cached_input", "Cached input", "#86efac"],
+        ["cache_write", "Cache writes", "#c084fc"],
+        ["output", "Output", "#fbbf24"],
+      ];
+      const valid = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+      const maximum = Math.max(0, ...rates.flatMap((row) =>
+        categories.map(([key]) => row[key]).filter(valid)
+      ));
+      return `<div class="price-chart"><div class="price-chart-body">
+        <div class="price-chart-legend">${categories.map(([, name, color]) =>
+          `<span><span class="price-swatch" style="background:${color}" aria-hidden="true"></span>${esc(name)}</span>`
+        ).join("")}</div>
+        <div class="price-chart-axis" aria-label="Shared linear axis in USD per token">
+          <span>${pricePerToken(0)}</span><span>${pricePerToken(maximum / 2)}</span><span>${pricePerToken(maximum)}</span>
+        </div>
+        ${rates.map((row) => `<div class="price-chart-model">
+          <strong>${esc(row.model)}</strong><div>${categories.map(([key, name, color]) => {
+            const value = row[key];
+            const price = valid(value) ? pricePerToken(value) : "Unavailable";
+            const width = valid(value) && maximum > 0 ? value / maximum * 100 : 0;
+            const label = `${row.model} · ${name}: ${price}${valid(value) ? " per token" : ""}`;
+            return `<div class="price-chart-sample" title="${esc(label)}" aria-label="${esc(label)}">
+              <div class="price-chart-track" aria-hidden="true"><div class="price-chart-bar" style="width:${width}%;background:${color}"></div></div>
+              <span class="price-chart-value">${esc(price)}</span>
+            </div>`;
+          }).join("")}</div>
+        </div>`).join("")}
+        <p class="muted">Shared linear scale, starting at zero. Small prices have very short bars; exact USD per token is shown beside every bar. Hover for the model and category.</p>
+      </div></div>`;
+    }
+
+    function isoFromInput(id) {
+      const value = $(id).value;
+      return value ? new Date(value).toISOString() : "";
+    }
+
+    function apiQuery() {
+      const params = new URLSearchParams();
+      const since = isoFromInput("from-date");
+      const until = isoFromInput("to-date");
+      if (since) params.set("since", since);
+      if (until) params.set("until", until);
+      for (const model of [...modelFilters.include].sort()) params.append("include_model", model);
+      for (const model of [...modelFilters.exclude].sort()) params.append("exclude_model", model);
+      const query = params.toString();
+      return query ? `?${query}` : "";
+    }
+
+    async function load() {
+      const sequence = ++loadSequence;
+      $("status").textContent = "Loading…";
+      $("status").className = "status";
+      try {
+        const query = apiQuery();
+        const response = await fetch(`/api/all${query}`, {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (sequence !== loadSequence) return;
+        state = data;
+        render();
+        $("status").textContent = query ? "Filtered read-only DB connected" : "Read-only DB connected";
+      } catch (error) {
+        if (sequence !== loadSequence) return;
+        $("status").textContent = "DB read failed";
+        $("status").className = "status bad";
+        $("health").innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+      }
+    }
+
+    function saveModelFilters() {
+      try {
+        localStorage.setItem("codex-tokenomics-model-filters", JSON.stringify({
+          include: [...modelFilters.include], exclude: [...modelFilters.exclude],
+        }));
+      } catch (_) { /* Browser storage is optional. */ }
+    }
+
+    function renderModelFilters() {
+      const models = [...new Set([
+        ...(state.available_models || []), ...Object.keys(state.pricing?.rates_per_million || {}),
+        ...modelFilters.include, ...modelFilters.exclude,
+      ])].sort();
+      $("model-filter-options").innerHTML = [
+        ["include", "Include models"], ["exclude", "Exclude models"],
+      ].map(([kind, label]) => `<fieldset><legend>${label}</legend><div class="model-choices">${
+        models.map((model) => `<label><input type="checkbox" name="${kind}" value="${esc(model)}"
+          ${modelFilters[kind].has(model) ? "checked" : ""}>${esc(model)}</label>`).join("")
+      }</div></fieldset>`).join("");
+      const parts = [];
+      if (modelFilters.include.size) parts.push(`Include ${modelFilters.include.size}`);
+      if (modelFilters.exclude.size) parts.push(`Exclude ${modelFilters.exclude.size}`);
+      $("model-filter-summary").textContent = parts.join(" · ") || "All models";
+      $("model-filter-note").hidden = !parts.length;
+    }
+
+    function modelIsIncluded(model) {
+      const filters = state.filters || {};
+      const include = filters.include_models || [];
+      const exclude = filters.exclude_models || [];
+      return (!include.length || include.includes(model)) && !exclude.includes(model);
+    }
+
+    function card(label, value) {
+      return `<div class="panel card"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`;
+    }
+
+    function renderCards() {
+      const s = state.summary;
+      $("cards").innerHTML = [
+        card("Estimated USD · Standard API", costLabel(s)),
+        card("Total tokens", n(s.total_tokens)),
+        card("Responses", n(s.responses)),
+        card("Sessions", n(s.sessions)),
+        card("Active incidents", n(s.active_incidents)),
+        card("Cached input", n(s.cached_input_tokens)),
+        card("Output tokens", n(s.output_tokens)),
+      ].join("");
+    }
+
+    function renderPricing() {
+      const p = state.pricing;
+      if (!p) {
+        $("pricing").innerHTML = '<p class="muted">Pricing unavailable. Restart the UI server to load the updated backend.</p>';
+        return;
+      }
+      const s = state.summary;
+      const coverage = s.unpriced_responses > 0
+        ? `${n(s.unpriced_responses)} responses (${n(s.unpriced_tokens)} tokens) remain unpriced. Displayed amounts are known subtotals, not complete totals.`
+        : "All responses in the selected range have an estimated token price.";
+      const rates = Object.entries(p.rates_per_million || {})
+        .filter(([model]) => modelIsIncluded(model)).map(([model, rate]) => ({model, ...rate}));
+      $("pricing").innerHTML = `
+        <p class="muted">Estimates, not your invoice. Rates checked ${esc(p.checked_at)}. ${esc(coverage)}</p>
+        <p class="muted">${esc(p.assumptions)}</p>
+        <h2>Price per token · USD</h2>
+        <p class="muted">Standard short-context prices for one token. Each token category has its own rate.</p>
+        ${renderPriceChart(rates)}
+        <div class="table-wrap">${table(rates, [
+          ["Model", (x) => x.model],
+          ["Uncached input / token", (x) => pricePerToken(x.input), (x) => x.input],
+          ["Cached input / token", (x) => pricePerToken(x.cached_input), (x) => x.cached_input],
+          ["Cache writes / token", (x) => pricePerToken(x.cache_write), (x) => x.cache_write],
+          ["Output / token", (x) => pricePerToken(x.output), (x) => x.output],
+        ], {tableId: "token-rates"})}</div>
+        <details><summary>Public rates · USD per million tokens</summary>
+          <p><a href="https://developers.openai.com/api/docs/pricing" target="_blank" rel="noopener noreferrer">OpenAI pricing</a>
+          · <a href="https://developers.openai.com/api/docs/guides/prompt-caching" target="_blank" rel="noopener noreferrer">Cache accounting</a>
+          · <a href="https://developers.openai.com/api/docs/models/gpt-6.1-sol" target="_blank" rel="noopener noreferrer">GPT-6.1 Sol pricing</a></p>
+          <div class="table-wrap">${table(rates, [
+            ["Model", (x) => x.model],
+            ["Uncached input", (x) => usd(x.input, true), (x) => x.input],
+            ["Cached input", (x) => usd(x.cached_input, true), (x) => x.cached_input],
+            ["Cache writes", (x) => usd(x.cache_write, true), (x) => x.cache_write],
+            ["Output", (x) => usd(x.output, true), (x) => x.output],
+          ], {tableId: "rates"})}</div>
+          <p class="muted">Rates above are short-context Standard prices. Long-context adjustments are included in estimates. GPT-5.5 has no cache-write premium. Showing a historical model does not select or run it.</p>
+        </details>`;
+    }
+
+    function renderHealth() {
+      const h = state.health;
+      $("health").innerHTML = `
+        <table><tbody>
+          <tr><th>Status</th><td>${h.integrity_check === "ok" ? "OK" : "Degraded"}</td></tr>
+          <tr><th>Last success</th><td>${date(h.last_success_at)}</td></tr>
+          <tr><th>Last poll</th><td>${date(h.last_poll_at)}</td></tr>
+          <tr><th>Files seen</th><td>${n(h.files_seen)}</td></tr>
+          <tr><th>Parse failures</th><td>${n(h.parse_failures)}</td></tr>
+          <tr><th>Notification failures</th><td>${n(h.notification_failures)}</td></tr>
+        </tbody></table>`;
+    }
+
+    function renderActiveIncidents() {
+      const active = state.incidents.filter((item) => item.status === "active");
+      if (!active.length) {
+        $("active-incidents").innerHTML = `<p class="muted">No active incidents.</p>`;
+        return;
+      }
+      $("active-incidents").innerHTML = table(active, [
+        ["Opened", (x) => date(x.opened_at), (x) => x.opened_at],
+        ["Scope", (x) => `${x.scope_type}: ${short(x.scope_id)}`],
+        ["Trigger", (x) => x.trigger],
+        ["Observed/min", (x) => n(Math.round(x.observed_rate)), (x) => x.observed_rate],
+        ["Failures", (x) => n(x.notification_failures), (x) => x.notification_failures],
+      ], {tableId: "active-incidents"});
+    }
+
+    function short(value) {
+      const text = String(value ?? "");
+      return text.length > 18 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+    }
+
+    function normalizeSortValue(value) {
+      if (value === null || value === undefined || value === "") return null;
+      if (typeof value === "number") return value;
+      if (typeof value === "boolean") return value ? 1 : 0;
+      const text = String(value);
+      const numeric = Number(text.replaceAll(",", ""));
+      if (text.trim() !== "" && Number.isFinite(numeric)) return numeric;
+      return text.toLocaleLowerCase();
+    }
+
+    function sortRows(rows, valueFn, direction) {
+      const multiplier = direction === "desc" ? -1 : 1;
+      return rows.map((row, index) => ({row, index}))
+        .sort((left, right) => {
+          const a = normalizeSortValue(valueFn(left.row));
+          const b = normalizeSortValue(valueFn(right.row));
+          if (a === null && b === null) return left.index - right.index;
+          if (a === null) return 1;
+          if (b === null) return -1;
+          if (a < b) return -1 * multiplier;
+          if (a > b) return 1 * multiplier;
+          return left.index - right.index;
+        })
+        .map((item) => item.row);
+    }
+
+    function setSort(tableId, columnIndex) {
+      const current = sortState[tableId] || {};
+      const direction = current.index === columnIndex && current.direction === "asc" ? "desc" : "asc";
+      sortState[tableId] = {index: columnIndex, direction};
+      render();
+    }
+
+    function table(rows, columns, options = {}) {
+      const tableId = options.tableId || "";
+      const current = tableId ? sortState[tableId] : null;
+      const sorted = current
+        ? sortRows(rows, columns[current.index]?.[2] || columns[current.index]?.[1] || (() => ""), current.direction)
+        : rows;
+      const headers = columns.map(([name], index) => {
+        if (!tableId) return `<th>${esc(name)}</th>`;
+        const indicator = current?.index === index ? (current.direction === "asc" ? " ▲" : " ▼") : "";
+        return `<th><button type="button" data-sort-table="${esc(tableId)}" data-sort-index="${index}" onclick='setSort("${esc(tableId)}", ${index})'>${esc(name)}${indicator}</button></th>`;
+      }).join("");
+      return `<table><thead><tr>${headers}</tr></thead><tbody>` +
+        sorted.map((row) => `<tr>${columns.map(([, fn]) => `<td>${esc(fn(row))}</td>`).join("")}</tr>`).join("") +
+        `</tbody></table>`;
+    }
+
+    function renderCosts() {
+      $("agents").innerHTML = table(state.agents, [
+        ["Agent", (x) => x.agent_kind || "unknown"],
+        ["Sessions", (x) => n(x.sessions), (x) => x.sessions],
+        ["Tokens", (x) => n(x.total_tokens), (x) => x.total_tokens],
+        ["Est. USD", costLabel, (x) => x.estimated_usd],
+      ], {tableId: "agents"});
+      $("models").innerHTML = table(state.models, [
+        ["Model", (x) => x.model],
+        ["Responses", (x) => n(x.responses), (x) => x.responses],
+        ["Tokens", (x) => n(x.total_tokens), (x) => x.total_tokens],
+        ["Est. USD", costLabel, (x) => x.estimated_usd],
+      ], {tableId: "models"});
+    }
+
+    function renderSessions() {
+      const filter = $("session-filter").value.toLowerCase();
+      const rows = state.sessions.filter((row) =>
+        JSON.stringify([row.session_id, row.agent_kind, row.source, row.models, row.label])
+          .toLowerCase().includes(filter)
+      ).slice(0, 80);
+      $("sessions").innerHTML = table(rows, [
+        ["Label", (x) => x.label],
+        ["Session", (x) => short(x.session_id)],
+        ["Models", (x) => x.models],
+        ["Seen", (x) => `${date(x.first_seen_at)} → ${date(x.last_seen_at)}`, (x) => x.last_seen_at],
+        ["Tokens", (x) => n(x.total_tokens), (x) => x.total_tokens],
+        ["Est. USD", costLabel, (x) => x.estimated_usd],
+        ["Cache", (x) => `${Math.round((x.cache_ratio || 0) * 100)}%`, (x) => x.cache_ratio],
+      ], {tableId: "sessions"});
+    }
+
+    function renderIncidents() {
+      $("incidents").innerHTML = table(state.incidents.slice(0, 100), [
+        ["Status", (x) => x.status],
+        ["Opened", (x) => date(x.opened_at), (x) => x.opened_at],
+        ["Recovered", (x) => date(x.recovered_at), (x) => x.recovered_at],
+        ["Scope", (x) => `${x.scope_type}: ${short(x.scope_id)}`],
+        ["Trigger", (x) => x.trigger],
+        ["Observed/min", (x) => n(Math.round(x.observed_rate)), (x) => x.observed_rate],
+        ["Failures", (x) => n(x.notification_failures), (x) => x.notification_failures],
+      ], {tableId: "incidents"}).replaceAll(">active<", `><span class="active">active</span><`)
+        .replaceAll(">recovered<", `><span class="recovered">recovered</span><`);
+    }
+
+    function renderUsage() {
+      const rows = [...state.usage].reverse().slice(-80);
+      const max = Math.max(1, ...rows.map((row) => row.total_tokens || 0));
+      $("usage").innerHTML = `
+        <div style="display:flex; gap:2px; align-items:end; min-height:140px;">
+          ${rows.map((row) => `<div title="${esc(date(row.observed_at))}: ${n(row.total_tokens)} tokens"
+            style="height:${Math.max(2, (row.total_tokens || 0) / max * 140)}px; flex:1; min-width:3px;
+            background:linear-gradient(180deg,#7dd3fc,#c084fc); border-radius:4px 4px 0 0"></div>`).join("")}
+        </div>
+        <p class="muted">Last ${rows.length} usage samples, scaled by total tokens.</p>`;
+    }
+
+    function render() {
+      renderModelFilters();
+      renderCards();
+      renderPricing();
+      renderHealth();
+      renderActiveIncidents();
+      renderCosts();
+      renderSessions();
+      renderIncidents();
+      renderUsage();
+    }
+
+    $("refresh").addEventListener("click", load);
+    $("from-date").addEventListener("change", load);
+    $("to-date").addEventListener("change", load);
+    $("clear-range").addEventListener("click", () => {
+      $("from-date").value = "";
+      $("to-date").value = "";
+      load();
+    });
+    $("session-filter").addEventListener("input", renderSessions);
+    $("model-filter-options").addEventListener("change", (event) => {
+      const input = event.target;
+      if (!Object.hasOwn(modelFilters, input.name)) return;
+      if (input.checked) modelFilters[input.name].add(input.value);
+      else modelFilters[input.name].delete(input.value);
+      saveModelFilters();
+      load();
+    });
+    $("clear-models").addEventListener("click", () => {
+      modelFilters.include.clear();
+      modelFilters.exclude.clear();
+      saveModelFilters();
+      if (state) renderModelFilters();
+      load();
+    });
+    load();
+  </script>
+</body>
+</html>
